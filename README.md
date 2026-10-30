@@ -1,3 +1,16 @@
+# R4d-P4wn (modified P4wnP1 A.L.O.A.)
+
+**This is a modified version of P4wnP1 A.L.O.A.**
+
+- Original work: Copyright (C) 2018 Marcus Mengs (MaMe82), GNU GPL v3 or later.
+- This modified version: Copyright (C) 2026 Son-of-David, same license.
+- Upstream compared: [RoganDawes/P4wnP1_aloa](https://github.com/RoganDawes/P4wnP1_aloa) commit `a56bb4d`.
+- **There is no warranty.** See `LICENSE`, `NOTICE`, and **`MODIFICATIONS.md`** (file-by-file list of additions and edits).
+
+The original README from MaMe82 follows.
+
+---
+
 # P4wnP1 A.L.O.A.
 
 P4wnP1 A.L.O.A. by MaMe82 is a framework which turns a Rapsberry Pi Zero W into a flexible, low-cost platform for 
@@ -1583,7 +1596,13 @@ it interferes with standard WiFi functionality used by P4wnP1 (crashes if the in
 ## 7. Copyright
 
     P4wnP1 A.L.O.A.
-    Copyright (C) 2018 Marcus Mengs
+    Copyright (C) 2018 Marcus Mengs (MaMe82)
+
+    R4d-P4wn (this modified version)
+    Copyright (C) 2026 Son-of-David
+
+    This is a modified version of P4wnP1 A.L.O.A. Changes are listed in
+    MODIFICATIONS.md. Attribution for the original work is in NOTICE.
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by

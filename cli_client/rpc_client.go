@@ -301,9 +301,7 @@ func ClientDeployEthernetInterfaceSettings(host string, port string, settings *p
 }
 
 func ClientDeployWifiSettings(host string, port string, settings *pb.WiFiSettings) (state *pb.WiFiState, err error) {
-	// Set up a connection to the server.
 	address := host + ":" + port
-	//log.Printf("Connecting %s ...", address)
 	connection, err := grpc.Dial(address, grpc.WithInsecure())
 	if err != nil {
 		log.Fatalf("Could not connect to P4wnP1 RPC server: %v", err)
@@ -311,12 +309,10 @@ func ClientDeployWifiSettings(host string, port string, settings *pb.WiFiSetting
 	defer connection.Close()
 
 	rpcClient := pb.NewP4WNP1Client(connection)
-
-	// Contact the server
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second * 30)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*90)
 	defer cancel()
 
-	state,err = rpcClient.DeployWiFiSettings(ctx, settings)
+	state, err = rpcClient.DeployWiFiSettings(ctx, settings)
 	return
 }
 

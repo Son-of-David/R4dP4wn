@@ -1,4 +1,6 @@
-// +build linux,arm
+//go:build linux && (arm || arm64)
+// +build linux
+// +build arm arm64
 
 package datastore
 
@@ -8,6 +10,7 @@ import (
 	"github.com/dgraph-io/badger"
 	"github.com/dgraph-io/badger/options"
 	"io/ioutil"
+	"log"
 	"os"
 	"strings"
 )
@@ -51,21 +54,32 @@ func (s *Store) Open(initDbBackupPath string) (err error) {
 	badgerOpts.TableLoadingMode = options.FileIO
 	badgerOpts.ValueLogLoadingMode = options.FileIO
 
-	// check if DB dir exists
-	exists,err := exists(s.Path)
-	if err != nil { return err }
+	existed, err := exists(s.Path)
+	if err != nil {
+		return err
+	}
+	if !existed {
+		if err = os.MkdirAll(s.Path, 0755); err != nil {
+			return err
+		}
+	}
 
 	s.Db, err = badger.Open(badgerOpts)
+	if err != nil {
+		return err
+	}
 	if s.serializer == nil {
 		s.serializer = NewSerializerProtobuf(false)
 	}
 
-	//If the s.Path didn't exist, we have a clean and empty DB at this point and thus restore a initial db
-	if !exists {
-		err = s.Restore(initDbBackupPath, true)
+	keys, kerr := s.Keys()
+	if kerr != nil || len(keys) == 0 {
+		if rerr := s.Restore(initDbBackupPath, true); rerr != nil {
+			log.Printf("init.db not restored from %s (%v); continuing with empty store", initDbBackupPath, rerr)
+		}
 	}
 
-	return err
+	return nil
 }
 
 func (s *Store) Close() {

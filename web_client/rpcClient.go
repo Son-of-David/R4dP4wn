@@ -24,7 +24,7 @@ func NewRpcClient(addr string) Rpc {
 	println("Bringing up RPC client for address:", addr)
 	rcl := Rpc{}
 	rcl.Mutex = &sync.Mutex{}
-	cl := pb.NewP4WNP1Client(addr, grpcweb.WithDefaultCallOptions(grpcweb.ForceWebsocketTransport()))
+	cl := pb.NewP4WNP1Client(addr)
 	rcl.Client = cl
 	return rcl
 }
@@ -723,7 +723,7 @@ func (rpc *Rpc) ConnectionTest(timeout time.Duration) (err error) {
 		return err
 	}
 	if resp.Msg != req.Msg {
-		errors.New("Unexpected response")
+		return errors.New("Unexpected response")
 	}
 	return nil
 }
@@ -818,11 +818,10 @@ func (rpc *Rpc) StartEventListening(timeout time.Duration) (eventStream pb.P4WNP
 	// in case an already existing server connection is lost (the server resets the underlying socket, but has to be running to do so)
 
 
-	//Check if server is reachable (with timeout)
-	for RpcClient.ConnectionTest(timeout) != nil {
-		return eventStream,cancel,errors.New("Server not reachable")
+	if pingErr := RpcClient.ConnectionTest(timeout); pingErr != nil {
+		globalState.IsConnected = false
+		return eventStream, cancel, errors.New("Server not reachable")
 	}
-
 
 	println("... success")
 	globalState.IsConnected = true
@@ -831,8 +830,7 @@ func (rpc *Rpc) StartEventListening(timeout time.Duration) (eventStream pb.P4WNP
 	ctx, cancel := context.WithCancel(context.Background())
 	rpc.eventListeningCancel = cancel
 
-	// try RPC call
-	evStream, err := rpc.Client.EventListen(ctx, &pb.EventRequest{ListenType: common_web.EVT_ANY}) //No error if Websocket connection fails
+	evStream, err := rpc.Client.EventListen(ctx, &pb.EventRequest{ListenType: common_web.EVT_ANY}, grpcweb.ForceWebsocketTransport())
 
 	return evStream,cancel,err
 }

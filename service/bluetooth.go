@@ -1,4 +1,6 @@
-// +build linux,arm
+//go:build linux && (arm || arm64)
+// +build linux
+// +build arm arm64
 
 package service
 
@@ -129,7 +131,15 @@ func (bt *BtService) ReplaceDefaultSettings(s *pb.BluetoothSettings) {
 }
 
 func (bt *BtService) Stop() {
-	bt.Agent.Stop() // unregister the agent again
+	if bt == nil {
+		return
+	}
+	if bt.Agent != nil {
+		_ = bt.Agent.Stop()
+	}
+	if bt.Controller == nil {
+		return
+	}
 	if ci,err := bt.Controller.ReadControllerInformation(); err == nil {
 		if ci.ServiceNetworkServerNap {
 			bt.UnregisterNetworkServer(toolz.UUID_NETWORK_SERVER_NAP)

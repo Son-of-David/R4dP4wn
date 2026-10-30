@@ -1,4 +1,10 @@
-// +build linux,arm
+//go:build linux && (arm || arm64)
+// +build linux
+// +build arm arm64
+
+// Modified 2026 by Son-of-David as part of R4d-P4wn.
+// This is a modified version of P4wnP1 A.L.O.A. (Copyright (C) 2018 Marcus Mengs).
+// SPDX-License-Identifier: GPL-3.0-or-later  See LICENSE, NOTICE, MODIFICATIONS.md.
 
 package main
 
@@ -16,7 +22,9 @@ import (
 
 func main() {
 	//ToDo: Check for root privs
-	fmt.Println("P4wnP1 A.L.O.A. " + common_web.VERSION)
+	fmt.Println("R4d-P4wn " + common_web.VERSION + " (modified P4wnP1 A.L.O.A.)")
+	fmt.Println(common_web.VERSION_CREDIT)
+	fmt.Println("GNU GPL v3 or later. No warranty. See LICENSE, NOTICE, MODIFICATIONS.md")
 
 	svc,err := service.NewService()
 	if err != nil {

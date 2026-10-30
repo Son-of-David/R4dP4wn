@@ -1,4 +1,6 @@
-// +build arm
+//go:build linux && (arm || arm64)
+// +build linux
+// +build arm arm64
 
 package service
 
@@ -57,12 +59,12 @@ func (d * Dwc2ConnectWatcher) update(newStateConnected bool) {
 	if d.connected {
 		fmt.Println("Connected to USB host")
 		d.rootSvc.SubSysEvent.Emit(ConstructEventTrigger(common_web.TRIGGER_EVT_TYPE_USB_GADGET_CONNECTED))
-		//d.rootSvc.SubSysEvent.Emit(ConstructEventLog("USB watcher", 1, "Connected to USB host"))
-
+		if d.rootSvc.SubSysShare != nil {
+			d.rootSvc.SubSysShare.OnUSBHostChanged(true)
+		}
 	} else {
 		fmt.Println("Disconnected from USB host")
 		d.rootSvc.SubSysEvent.Emit(ConstructEventTrigger(common_web.TRIGGER_EVT_TYPE_USB_GADGET_DISCONNECTED))
-		//d.rootSvc.SubSysEvent.Emit(ConstructEventLog("USB watcher", 1, "Disconnected from USB host"))
 	}
 }
 
@@ -168,15 +170,20 @@ func (d * Dwc2ConnectWatcher) Start() (err error){
 }
 
 func (d * Dwc2ConnectWatcher) Stop() error {
-	d.isRunning = false
-
-	// leave dwc2 group
-	if grpId,err := d.fam.GetGroupByName(dwc2_group_name); err == nil {
-		d.genl.DropGroupMembership(grpId)
+	if d == nil {
+		return nil
 	}
-	// close soket
-	return d.genl.Close()
-
+	d.isRunning = false
+	// On Radxa / stock dwc3 there is no P4wnP1 genl family; Start() leaves fam/genl unset.
+	if d.fam != nil && d.genl != nil {
+		if grpId, err := d.fam.GetGroupByName(dwc2_group_name); err == nil {
+			_ = d.genl.DropGroupMembership(grpId)
+		}
+	}
+	if d.genl != nil {
+		return d.genl.Close()
+	}
+	return nil
 }
 
 func NewDwc2ConnectWatcher(rootSvc *Service) (d *Dwc2ConnectWatcher) {

@@ -57,7 +57,11 @@ func (nim *NetworkInterfaceManager) StartDHCPClient() (err error) {
 
 
 	//We use the run command and allow dhcpcd to daemonize
-	proc := exec.Command("/sbin/dhcpcd", "-b", "-C", "wpa_supplicant", nameIface) //we avoid starting wpa_supplicant along with the dhcp client
+	dhcpBin := lookPathBin("dhcpcd")
+	if dhcpBin == "" {
+		dhcpBin = "/sbin/dhcpcd"
+	}
+	proc := exec.Command(dhcpBin, "-b", "-C", "wpa_supplicant", nameIface) //we avoid starting wpa_supplicant along with the dhcp client
 	dhcpcd_out, err := proc.CombinedOutput()
 	//err = proc.Run()
 	if err != nil { return err}
@@ -204,6 +208,9 @@ func DHCPCreateConfigFileString(s *pb.DHCPServerSettings) (config string, err er
 	//bind only o the given interface, except suppressed by `doNotBindInterface` option
 	if !s.DoNotBindInterface { config += fmt.Sprintf("bind-interfaces\n") }
 	config += fmt.Sprintf("port=%d\n", s.ListenPort)
+	if s.ListenPort != 0 {
+		config += "server=8.8.8.8\nserver=1.1.1.1\nno-resolv\n"
+	}
 	if len(s.CallbackScript) > 0 { config += fmt.Sprintf("dhcp-script=%s\n", s.CallbackScript) }
 	if len(s.LeaseFile) > 0 {
 		config += fmt.Sprintf("dhcp-leasefile=%s\n", s.LeaseFile)

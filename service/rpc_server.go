@@ -10,7 +10,6 @@ import (
 	"github.com/mame82/P4wnP1_aloa/common"
 	"github.com/mame82/P4wnP1_aloa/common_web"
 	pb "github.com/mame82/P4wnP1_aloa/proto"
-	"github.com/mame82/P4wnP1_aloa/service/bluetooth"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"io"
@@ -135,50 +134,64 @@ func (s *server) DeployMasterTemplate(ctx context.Context, mt *pb.MasterTemplate
 		fmt.Printf("... succeeded deploying TriggerActions '%s'\n", mt.TemplateNameTriggerActions)
 	}
 
-	for _,nnw := range mt.TemplateNamesNetwork {
-		fmt.Printf("... deploying Network Interface Settings '%s' ...\n", nnw)
-		_,err = s.DeployStoredEthernetInterfaceSettings(ctx, &pb.StringMessage{Msg: nnw})
-		if err != nil {
-			fmt.Printf("... error deploying Network Interface Settings '%s'\n", nnw)
-			return
+	if len(mt.TemplateNameWifi) > 0 {
+		fmt.Printf("... deploying WiFi settings '%s' ...\n", mt.TemplateNameWifi)
+		_, wifiErr := s.DeployStoredWifiSettings(ctx, &pb.StringMessage{Msg: mt.TemplateNameWifi})
+		if wifiErr != nil {
+			fmt.Printf("... error deploying WiFi settings '%s': %v\n", mt.TemplateNameWifi, wifiErr)
+			err = wifiErr
+		} else {
+			fmt.Printf("... succeeded deploying WiFi settings '%s'\n", mt.TemplateNameWifi)
 		}
-		fmt.Printf("... succeeded deploying Network Interface Settings '%s'\n", nnw)
 	}
-
 	if len(mt.TemplateNameBluetooth) > 0 {
 		fmt.Printf("... deploying Bluetooth settings '%s' ...\n", mt.TemplateNameBluetooth)
 		_, btErr := s.DeployStoredBluetoothSettings(ctx, &pb.StringMessage{Msg: mt.TemplateNameBluetooth})
 		if btErr != nil {
-			if btErr == bluetooth.ErrBtSvcNotAvailable {
-				fmt.Printf("... ignoring Bluetooth error '%s'\n", mt.TemplateNameBluetooth)
-
-			} else {
-				fmt.Printf("... error deploying Bluetooth settings '%s'\n", mt.TemplateNameBluetooth)
-				return
-			}
-			fmt.Printf("... error deploying Bluetooth settings '%s'\n", mt.TemplateNameBluetooth)
+			fmt.Printf("... ignoring Bluetooth error '%s': %v\n", mt.TemplateNameBluetooth, btErr)
+		} else {
+			fmt.Printf("... succeeded deploying Bluetooth settings '%s'\n", mt.TemplateNameBluetooth)
 		}
-		fmt.Printf("... succeeded deploying Bluetooth settings '%s'\n", mt.TemplateNameBluetooth)
 	}
 	if len(mt.TemplateNameUsb) > 0 {
 		fmt.Printf("... deploying USB settings '%s' ...\n", mt.TemplateNameUsb)
-		_, err = s.DeployStoredUSBSettings(ctx, &pb.StringMessage{Msg: mt.TemplateNameUsb})
-		if err != nil {
-			fmt.Printf("... error deploying USB settings '%s'\n", mt.TemplateNameUsb)
-			return
+		_, usbErr := s.DeployStoredUSBSettings(ctx, &pb.StringMessage{Msg: mt.TemplateNameUsb})
+		if usbErr != nil {
+			fmt.Printf("... error deploying USB settings '%s': %v (continuing)\n", mt.TemplateNameUsb, usbErr)
+		} else {
+			fmt.Printf("... succeeded deploying USB settings '%s'\n", mt.TemplateNameUsb)
 		}
-		fmt.Printf("... succeeded deploying USB settings '%s'\n", mt.TemplateNameUsb)
-	}
-	if len(mt.TemplateNameWifi) > 0 {
-		fmt.Printf("... deploying WiFi settings '%s' ...\n", mt.TemplateNameWifi)
-		_, err = s.DeployStoredWifiSettings(ctx, &pb.StringMessage{Msg: mt.TemplateNameWifi})
-		if err != nil {
-			fmt.Printf("... error deploying WiFi settings '%s'\n", mt.TemplateNameWifi)
-			return
-		}
-		fmt.Printf("... succeeded deploying WiFi settings '%s'\n", mt.TemplateNameWifi)
 	}
 
+	for _,nnw := range mt.TemplateNamesNetwork {
+		fmt.Printf("... deploying Network Interface Settings '%s' ...\n", nnw)
+		_, netErr := s.DeployStoredEthernetInterfaceSettings(ctx, &pb.StringMessage{Msg: nnw})
+		if netErr != nil {
+			fmt.Printf("... error deploying Network Interface Settings '%s': %v (continuing)\n", nnw, netErr)
+		} else {
+			fmt.Printf("... succeeded deploying Network Interface Settings '%s'\n", nnw)
+		}
+	}
+
+	if len(mt.TemplateNameWifi) > 0 && s.rootSvc != nil && s.rootSvc.SubSysWifi != nil {
+		_ = s.rootSvc.SubSysWifi.UpdateStateFromIw()
+		st := s.rootSvc.SubSysWifi.State
+		if st == nil || st.Mode != pb.WiFiStateMode_AP_UP {
+			fmt.Printf("... WiFi not AP after USB/network deploy (mode=%v); retrying '%s'\n", st.GetMode(), mt.TemplateNameWifi)
+			if _, wifiErr := s.DeployStoredWifiSettings(ctx, &pb.StringMessage{Msg: mt.TemplateNameWifi}); wifiErr != nil {
+				fmt.Printf("... WiFi retry failed: %v\n", wifiErr)
+				err = wifiErr
+			} else {
+				fmt.Printf("... WiFi retry succeeded\n")
+				err = nil
+			}
+		}
+	}
+
+	if err != nil {
+		fmt.Printf("... master template finished with WiFi error: %v\n", err)
+		return
+	}
 	fmt.Println("... master template deployed successfully")
 	return
 }
@@ -624,15 +637,15 @@ func (s *server) DeployWiFiSettings(ctx context.Context, wset *pb.WiFiSettings) 
 }
 
 func (s *server) GetWiFiState(ctx context.Context, empty *pb.Empty) (wstate *pb.WiFiState, err error) {
-	// Update state before transmitting back
-	s.rootSvc.SubSysWifi.UpdateStateFromIw()
-
-	st := s.rootSvc.SubSysWifi.State
-	return st, nil
+	if s.rootSvc == nil || s.rootSvc.SubSysWifi == nil || s.rootSvc.SubSysWifi.State == nil {
+		return &pb.WiFiState{}, nil
+	}
+	_ = s.rootSvc.SubSysWifi.UpdateStateFromIw()
+	return s.rootSvc.SubSysWifi.State, nil
 }
 
 func (s *server) ListenWiFiStateChanges(ctx context.Context, empty *pb.Empty) (wstate *pb.WiFiState, err error) {
-	panic("implement me")
+	return s.GetWiFiState(ctx, empty)
 }
 
 func (s *server) EchoRequest(ctx context.Context, req *pb.StringMessage) (resp *pb.StringMessage, err error) {
@@ -646,9 +659,9 @@ func (s *server) EventListen(eReq *pb.EventRequest, eStream pb.P4WNP1_EventListe
 	for {
 		select {
 			case ev := <- rcv.EventQueue:
-				//fmt.Printf("Event dequed to send: %+v\n", ev)
-
-				//send Event to stream
+				if ev == nil {
+					return nil
+				}
 				err = eStream.Send(ev)
 				if err != nil {
 					rcv.Cancel()
@@ -945,13 +958,16 @@ func (s *server) GetDeployedGadgetSetting(ctx context.Context, e *pb.Empty) (gs 
 	gs, err = s.rootSvc.SubSysUSB.ParseGadgetState(USB_GADGET_NAME)
 
 	if err != nil {
-		log.Printf("Error parsing current gadget config: %v", err)
-		return
+		log.Printf("Error parsing current gadget config: %v; returning defaults", err)
+		def := GetDefaultGadgetSettings()
+		return &def, nil
 	}
 
-	gs.DevPathHidKeyboard = s.rootSvc.SubSysUSB.State.DevicePath[USB_FUNCTION_HID_KEYBOARD_name]
-	gs.DevPathHidMouse = s.rootSvc.SubSysUSB.State.DevicePath[USB_FUNCTION_HID_MOUSE_name]
-	gs.DevPathHidRaw = s.rootSvc.SubSysUSB.State.DevicePath[USB_FUNCTION_HID_RAW_name]
+	if gs != nil && s.rootSvc.SubSysUSB != nil && s.rootSvc.SubSysUSB.State != nil && s.rootSvc.SubSysUSB.State.DevicePath != nil {
+		gs.DevPathHidKeyboard = s.rootSvc.SubSysUSB.State.DevicePath[USB_FUNCTION_HID_KEYBOARD_name]
+		gs.DevPathHidMouse = s.rootSvc.SubSysUSB.State.DevicePath[USB_FUNCTION_HID_MOUSE_name]
+		gs.DevPathHidRaw = s.rootSvc.SubSysUSB.State.DevicePath[USB_FUNCTION_HID_RAW_name]
+	}
 
 	return
 }
@@ -959,18 +975,22 @@ func (s *server) GetDeployedGadgetSetting(ctx context.Context, e *pb.Empty) (gs 
 func (s *server) DeployGadgetSetting(ctx context.Context, newGs *pb.GadgetSettings) (gs *pb.GadgetSettings, err error) {
 	log.Printf("Called DeployGadgetSettings\n")
 	defer s.rootSvc.SubSysEvent.Emit(ConstructEventNotifyStateChange(common_web.STATE_CHANGE_EVT_TYPE_USB))
-	gs_backup,_ := s.rootSvc.SubSysUSB.ParseGadgetState(USB_GADGET_NAME)
-
-
+	gs_backup, _ := s.rootSvc.SubSysUSB.ParseGadgetState(USB_GADGET_NAME)
 
 	errg := s.rootSvc.SubSysUSB.DeployGadgetSettings(newGs)
 	err = nil
 	if errg != nil {
 		err = errors.New(fmt.Sprintf("Deploying new gadget settings failed, reverted to old ones: %v", errg))
-		s.rootSvc.SubSysUSB.DeployGadgetSettings(gs_backup) //We don't catch the error, as the old settings should have been working
+		if gs_backup != nil {
+			_ = s.rootSvc.SubSysUSB.DeployGadgetSettings(gs_backup)
+		}
 	}
 
-	gs, _ = s.rootSvc.SubSysUSB.ParseGadgetState(USB_GADGET_NAME) //Return settings from deployed gadget
+	gs, _ = s.rootSvc.SubSysUSB.ParseGadgetState(USB_GADGET_NAME)
+	if gs == nil {
+		def := GetDefaultGadgetSettings()
+		gs = &def
+	}
 	return
 }
 
@@ -1075,16 +1095,49 @@ func (srv *server) StartRpcServerAndWeb(host string, gRPCPort string, webPort st
 	log.Printf("P4wnP1 gRPC server listening on " + listen_address_grpc)
 
 
-	//Wrap the server into a gRPC-web server
-	grpc_web_srv := grpcweb.WrapServer(s, grpcweb.WithWebsockets(true)) //Wrap server to improbable grpc-web with websockets
-	//define a handler for a HTTP web server using the gRPC-web proxy
+	// The web UI forces websocket transport for EventListen. Rejected websocket
+	// origin / CORS checks surface as "No connection to server" in the browser.
+	grpc_web_srv := grpcweb.WrapServer(s,
+		grpcweb.WithWebsockets(true),
+		grpcweb.WithWebsocketOriginFunc(func(*http.Request) bool { return true }),
+		grpcweb.WithOriginFunc(func(string) bool { return true }),
+		grpcweb.WithCorsForRegisteredEndpointsOnly(false),
+	)
 	http_gRPC_web_handler := func(resp http.ResponseWriter, req *http.Request) {
-		//fmt.Printf("===========\nRequest: %s\n %v\n=============\n", req)
+		if strings.HasPrefix(req.URL.Path, "/api/share") {
+			srv.ServeShareAPI(resp, req)
+			return
+		}
+		if strings.HasPrefix(req.URL.Path, "/api/wifi") {
+			srv.ServeWifiStaAPI(resp, req)
+			return
+		}
+		if strings.HasPrefix(req.URL.Path, "/api/kismet") {
+			srv.ServeKismetAPI(resp, req)
+			return
+		}
+		if strings.HasPrefix(req.URL.Path, "/api/gps") {
+			srv.ServeGpsAPI(resp, req)
+			return
+		}
+		if strings.HasPrefix(req.URL.Path, "/api/airgeddon") {
+			srv.ServeAirgeddonAPI(resp, req)
+			return
+		}
+		if strings.HasPrefix(req.URL.Path, "/api/term") {
+			srv.ServeWebTermAPI(resp, req)
+			return
+		}
+		if strings.HasPrefix(req.URL.Path, "/api/capture") {
+			srv.ServeCaptureAPI(resp, req)
+			return
+		}
+		upgrade := strings.ToLower(req.Header.Get("Upgrade"))
 		if strings.Contains(req.Header.Get("Content-Type"), "application/grpc") ||
 			req.Method == "OPTIONS" ||
-			strings.Contains(req.Header.Get("Sec-Websocket-Protocol"), "grpc-websockets") {
-			//fmt.Printf("gRPC-web req:\n %v\n", req)
-			grpc_web_srv.ServeHTTP(resp, req) // if content type indicates grpc or REQUEST METHOD IS OPTIONS (pre-flight) serve gRPC-web
+			strings.Contains(strings.ToLower(req.Header.Get("Sec-Websocket-Protocol")), "grpc-websockets") ||
+			upgrade == "websocket" {
+			grpc_web_srv.ServeHTTP(resp, req)
 		} else {
 			fmt.Printf("legacy web req: %v\n", req.RequestURI)
 			http.FileServer(http.Dir((absWebRoot))).ServeHTTP(resp, req)
@@ -1100,7 +1153,7 @@ func (srv *server) StartRpcServerAndWeb(host string, gRPCPort string, webPort st
 
 	go func() {
 		if err_http := http_srv.ListenAndServe(); err_http != nil {
-			log.Fatal(err)
+			log.Fatal(err_http)
 		}
 	}()
 	log.Printf("P4wnP1 gRPC-web server listening on " + http_srv.Addr)

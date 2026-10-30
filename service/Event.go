@@ -43,13 +43,28 @@ func (evm *EventManager) Start() {
 
 func (evm *EventManager) Stop() {
 	log.Println("Event Manager: Stopping ...")
-	evm.cancel()
-	close(evm.eventQueue)
+	if evm.cancel != nil {
+		evm.cancel()
+	}
+	// Do not close eventQueue: a receive on a closed chan yields a nil *Event
+	// and dispatch() used to nil-deref it, crashing the process (and hostapd) on every restart.
 }
 
 func (em *EventManager) Emit(event *pb.Event) {
-	//fmt.Printf("Emitting event: %+v\n", event)
-	em.eventQueue <- event
+	if em == nil || event == nil {
+		return
+	}
+	select {
+	case em.eventQueue <- event:
+	case <-em.ctx.Done():
+	default:
+		// drop if the dispatcher is backed up during shutdown
+		select {
+		case em.eventQueue <- event:
+		case <-em.ctx.Done():
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 func (em *EventManager) Write(p []byte) (n int, err error) {
@@ -88,37 +103,50 @@ func (em *EventManager) RegisterReceiver(filterEventType int64) *EventReceiver {
 }
 
 func (em *EventManager) UnregisterReceiver(receiver *EventReceiver) {
-	if !receiver.isRegistered {
+	if em == nil || receiver == nil || !receiver.isRegistered {
 		return
 	}
 
-	//mark as unregistered
 	receiver.isRegistered = false
-	em.unregisterReceiver <- receiver
+	select {
+	case em.unregisterReceiver <- receiver:
+	case <-em.ctx.Done():
+	}
 }
 
 func (em *EventManager) dispatch() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("event dispatcher recovered: %v", r)
+		}
+	}()
 	fmt.Println("Started event dispatcher")
 loop:
 	for {
 		select {
-		case evToDispatch := <-em.eventQueue:
+		case evToDispatch, ok := <-em.eventQueue:
+			if !ok || evToDispatch == nil {
+				continue
+			}
 			em.registeredReceiversMutex.Lock()
 			for receiver := range em.registeredReceivers {
-				// check if this receiver is listening for this event type
-				if receiver != nil && receiver.isRegistered && (receiver.FilterEventType == evToDispatch.Type || receiver.FilterEventType == common_web.EVT_ANY) {
-					receiver.EventQueue <- evToDispatch
+				if receiver == nil || !receiver.isRegistered || receiver.EventQueue == nil {
+					continue
+				}
+				if receiver.FilterEventType == evToDispatch.Type || receiver.FilterEventType == common_web.EVT_ANY {
+					select {
+					case receiver.EventQueue <- evToDispatch:
+					default:
+					}
 				}
 			}
 			em.registeredReceiversMutex.Unlock()
 		case <-em.ctx.Done():
 			em.registeredReceiversMutex.Lock()
 			for receiver := range em.registeredReceivers {
-				// Calling unregister directly would dead lock on registeredReceiversMutex, as a buffer-less channel is
-				// used and the receiver (register_unregister loop) locks registeredReceiversMutex, again
-				// Calling cancel on the receiver itself, isn't a problem as the unregister is called by a dedicated go
-				// routine per receiver, if the context is done.
-				receiver.Cancel()
+				if receiver != nil && receiver.Cancel != nil {
+					receiver.Cancel()
+				}
 			}
 			em.registeredReceiversMutex.Unlock()
 			break loop
@@ -128,22 +156,39 @@ loop:
 }
 
 func (em *EventManager) register_unregister() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("event register watcher recovered: %v", r)
+		}
+	}()
 	fmt.Println("Started event receiver (un)register watcher")
 loop:
 	for {
 		select {
-		case er := <- em.registerReceiver:  // Fix: this would already unlock the RegisterReceiver method ...
+		case er := <-em.registerReceiver:
+			if er == nil {
+				continue
+			}
 			em.registeredReceiversMutex.Lock()
-			em.registeredReceivers[er] = true // ... but only at this point it is assured that the Listener receives events ...
+			em.registeredReceivers[er] = true
 			fmt.Printf("Registered event receiver type %d, overall receiver count %d\n", er.FilterEventType, len(em.registeredReceivers))
-			// ... this is solved by signaling the successful registration by closing wait channel (the registerReceiver method doesn't return before this channel is closed)
-			close(er.waitRegister)
+			if er.waitRegister != nil {
+				close(er.waitRegister)
+			}
 			em.registeredReceiversMutex.Unlock()
-		case er := <- em.unregisterReceiver:
+		case er := <-em.unregisterReceiver:
+			if er == nil {
+				continue
+			}
 			em.registeredReceiversMutex.Lock()
 			delete(em.registeredReceivers, er)
-			er.Cancel() // cancel context BEFORE closing the eventQueue channel
-			close(er.EventQueue)
+			if er.Cancel != nil {
+				er.Cancel()
+			}
+			if er.EventQueue != nil {
+				close(er.EventQueue)
+				er.EventQueue = nil
+			}
 			fmt.Printf("Unregistered event receiver type %d, overall receiver count %d\n", er.FilterEventType, len(em.registeredReceivers))
 			em.registeredReceiversMutex.Unlock()
 		case <-em.ctx.Done():

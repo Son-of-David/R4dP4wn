@@ -575,10 +575,16 @@ func BluetoothControllerInformationToRpc(src *btmgmt.ControllerInformation) (tar
 }
 
 func BluetoothControllerInformationFromRpc(src *pb.BluetoothControllerInformation) (target *btmgmt.ControllerInformation) {
-	// Only changable settings are regarded
+	if src == nil {
+		return &btmgmt.ControllerInformation{}
+	}
+	cs := BluetoothControllerSettingsFromRpc(src.CurrentSettings)
+	if cs == nil {
+		cs = &btmgmt.ControllerSettings{}
+	}
 	target = &btmgmt.ControllerInformation{
 		Name: src.Name,
-		CurrentSettings: *BluetoothControllerSettingsFromRpc(src.CurrentSettings),
+		CurrentSettings: *cs,
 		ServiceNetworkServerGn: src.ServiceNetworkServerGn,
 		ServiceNetworkServerPanu: src.ServiceNetworkServerPanu,
 		ServiceNetworkServerNap: src.ServiceNetworkServerNap,
@@ -609,6 +615,9 @@ func BluetoothControllerSettingsToRpc(src *btmgmt.ControllerSettings) (target *p
 }
 
 func BluetoothControllerSettingsFromRpc(src *pb.BluetoothControllerSettings) (target *btmgmt.ControllerSettings) {
+	if src == nil {
+		return &btmgmt.ControllerSettings{}
+	}
 	target = &btmgmt.ControllerSettings{
 		StaticAddress: src.StaticAddress,
 		ControllerConfiguration: src.ControllerConfiguration,

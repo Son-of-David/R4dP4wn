@@ -1,0 +1,43 @@
+R4d-P4wn
+=========
+
+This program is a modified version of P4wnP1 A.L.O.A.
+
+Original work
+-------------
+  P4wnP1 A.L.O.A.
+  Copyright (C) 2018 Marcus Mengs (MaMe82)
+
+  Upstream source used for this comparison:
+    https://github.com/RoganDawes/P4wnP1_aloa
+    commit a56bb4d (2023-10-26) "Support OpenStick LTE modem"
+
+  MaMe82's original project:
+    https://github.com/mame82/P4wnP1_aloa
+
+Modifications
+-------------
+  Copyright (C) 2026 Son-of-David
+
+  This tree is branded R4d-P4wn and targets Radxa Zero 3E (RK3566, arm64)
+  in addition to the original Raspberry Pi Zero W platform.
+
+  A file-by-file list of additions and edits versus the upstream commit
+  above is in MODIFICATIONS.md.
+
+License
+-------
+  The original program is licensed under the GNU General Public License
+  version 3, or (at your option) any later version.
+
+  This modified version is licensed under the same terms. You must receive
+  a copy of the GNU GPL with this program (see the file LICENSE). If not,
+  see <https://www.gnu.org/licenses/>.
+
+  There is NO WARRANTY, to the extent permitted by law.
+
+How to obtain corresponding source
+----------------------------------
+  The complete corresponding source for this modified version is this
+  source tree, including LICENSE, NOTICE, MODIFICATIONS.md, and all
+  files listed in MODIFICATIONS.md.

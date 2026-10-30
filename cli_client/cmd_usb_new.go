@@ -32,7 +32,7 @@ var (
 
 	tmpUsbSerialnumber   = "deadbeef1337"
 	tmpUsbVid            = "0x1d6b"
-	tmpUsbPid            = "0x1347"
+	tmpUsbPid            = "0x134B"
 	tmpUsbManufacturer   = "MaMe82"
 	tmpUsbProduct        = "P4wnP1 by MaMe82"
 

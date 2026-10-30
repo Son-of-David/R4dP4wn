@@ -1,4 +1,6 @@
-// +build linux,arm
+//go:build linux && (arm || arm64)
+// +build linux
+// +build arm arm64
 
 package service
 
@@ -124,6 +126,12 @@ type Service struct {
 	SubSysUSB            *UsbGadgetManager
 	SubSysLed            *LedService
 	SubSysWifi           *WiFiService
+	SubSysKismet         *KismetManager
+	SubSysGps            *GpsManager
+	SubSysAirgeddon      *AirgeddonManager
+	SubSysWebTerm        *WebTermManager
+	SubSysShare          *ShareManager
+	SubSysCapture        *CaptureManager
 	SubSysBluetooth      *BtService
 	SubSysRPC            *server
 	SubSysTriggerActions *TriggerActionManager
@@ -145,6 +153,7 @@ func NewService() (svc *Service, err error) {
 	if err != nil {
 		return nil, err
 	}
+	svc.seedStoreDefaults()
 
 	svc.SubSysEvent = NewEventManager(20)
 
@@ -153,13 +162,19 @@ func NewService() (svc *Service, err error) {
 	if err != nil {
 		return nil, err
 	}
-	svc.SubSysUSB, err = NewUSBGadgetManager(svc) //Depends on NetworkSubSys, EvenSubSys
-	//	if err == ErrUsbNotUsable { err = nil } //ToDo: delete this
-	if err != nil {
-		return nil, err
-	}
-
 	svc.SubSysWifi = NewWifiService(svc) //Depends on NetworkSubSys
+	svc.SubSysKismet = NewKismetManager(svc)
+	svc.SubSysGps = NewGpsManager()
+	svc.SubSysAirgeddon = NewAirgeddonManager(svc)
+	svc.SubSysWebTerm = NewWebTermManager()
+	svc.SubSysShare = NewShareManager(svc)
+	svc.SubSysCapture = NewCaptureManager()
+
+	svc.SubSysUSB, err = NewUSBGadgetManager(svc) //Depends on NetworkSubSys, EvenSubSys
+	if err != nil {
+		log.Printf("USB gadget manager init failed (WiFi will still start): %v", err)
+		err = nil
+	}
 
 	svc.SubSysGpio = NewGpioManager(svc) //Depends on event subsys
 
@@ -222,6 +237,8 @@ func (s *Service) Start() (context.Context, context.CancelFunc) {
 	log.Println("Fire service started event ...")
 	s.SubSysEvent.Emit(ConstructEventTrigger(common_web.TRIGGER_EVT_TYPE_SERVICE_STARTED))
 
+	go s.StartBootNetworking()
+
 	return s.Ctx, s.Cancel
 }
 
@@ -236,12 +253,47 @@ func (s *Service) Shutdown() {
 }
 
 func (s *Service) Stop() {
-	s.SubSysTriggerActions.Stop()
-	s.SubSysLed.Stop()
-	s.SubSysGpio.Stop()
-	s.SubSysBluetooth.Stop()
-	s.SubSysDwc2ConnectWatcher.Stop()
-	s.SubSysEvent.Stop()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("service stop recovered: %v", r)
+		}
+	}()
+	if s.SubSysTriggerActions != nil {
+		s.SubSysTriggerActions.Stop()
+	}
+	if s.SubSysLed != nil {
+		s.SubSysLed.Stop()
+	}
+	if s.SubSysGpio != nil {
+		s.SubSysGpio.Stop()
+	}
+	if s.SubSysBluetooth != nil {
+		s.SubSysBluetooth.Stop()
+	}
+	if s.SubSysDwc2ConnectWatcher != nil {
+		s.SubSysDwc2ConnectWatcher.Stop()
+	}
+	if s.SubSysKismet != nil {
+		_ = s.SubSysKismet.StopQuiet()
+	}
+	if s.SubSysGps != nil {
+		s.SubSysGps.Shutdown()
+	}
+	if s.SubSysAirgeddon != nil {
+		_ = s.SubSysAirgeddon.Stop()
+	}
+	if s.SubSysWebTerm != nil {
+		_ = s.SubSysWebTerm.Stop()
+	}
+	if s.SubSysShare != nil {
+		s.SubSysShare.StopQuiet()
+	}
+	if s.SubSysCapture != nil {
+		s.SubSysCapture.StopQuiet()
+	}
+	if s.SubSysEvent != nil {
+		s.SubSysEvent.Stop()
+	}
 
 	if s.rebootOnStop {
 		fmt.Println("Rebooting...")

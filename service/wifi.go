@@ -24,7 +24,7 @@ import (
 
 const (
 	wifi_if_name                   string = "wlan0"
-	WPA_SUPPLICANT_CONNECT_TIMEOUT        = time.Second * 20
+	WPA_SUPPLICANT_CONNECT_TIMEOUT        = time.Second * 30
 	HOSTAPD_WAIT_AP_UP_TIMEOUT        = time.Second * 8
 )
 
@@ -65,6 +65,7 @@ type WiFiService struct {
 	LoggerWpaSupplicant     *util.TeeLogger          //logger for WPA supplicant
 	OutMonitorWpaSupplicant *wpaSupplicantOutMonitor //Monitors wpa_supplicant output and sets signals where needed
 	OutMonitorHostapd       *hostapdOutMonitor //Monitors hostapd output and sets signals where needed
+	StaIface                string                   // STA join iface (wlan0/wlan1); empty means IfaceName
 }
 
 func (wSvc *WiFiService) StartHostapd(timeout time.Duration) (err error) {
@@ -81,7 +82,7 @@ func (wSvc *WiFiService) StartHostapd(timeout time.Duration) (err error) {
 		wSvc.mutexHostapd.Lock()
 	}
 
-	wSvc.CmdHostapd = exec.Command("/usr/sbin/hostapd", wSvc.PathHostapdConf)
+	wSvc.CmdHostapd = exec.Command(hostapdBin(), wSvc.PathHostapdConf)
 	// the logger is the signal generator for OutMonitorHostapd, so we reset the signal before applying the logger
 	wSvc.OutMonitorHostapd.resultReceived.Reset()
 	wSvc.CmdHostapd.Stdout = wSvc.LoggerHostapd.LogWriter
@@ -220,10 +221,15 @@ func (wSvc *WiFiService) StartWpaSupplicant(timeout time.Duration) (err error) {
 
 	//we monitor output of wpa_supplicant till we are connected, fail due to wrong PSK or timeout is reached
 	//Note: PID file creation doesn't work when not started as daemon, so we do it manually, later on
-	wSvc.CmdWpaSupplicant = exec.Command("/sbin/wpa_supplicant", "-c", wSvc.PathWpaSupplicantConf, "-i", wSvc.IfaceName)
-	// the logger is the signal generator for OutMonitorWpaSupplicant, so we reset the signal before apllying the logger
+	bin := wpaSupplicantBin()
+	if bin == "" {
+		return errors.New("wpa_supplicant not found (install wpasupplicant)")
+	}
+	ifName := wSvc.staIfaceName()
+	wSvc.CmdWpaSupplicant = exec.Command(bin, "-D", "nl80211", "-c", wSvc.PathWpaSupplicantConf, "-i", ifName)
 	wSvc.OutMonitorWpaSupplicant.resultReceived.Reset()
 	wSvc.CmdWpaSupplicant.Stdout = wSvc.LoggerWpaSupplicant.LogWriter
+	wSvc.CmdWpaSupplicant.Stderr = wSvc.LoggerWpaSupplicant.LogWriter
 
 	err = wSvc.CmdWpaSupplicant.Start()
 	if err != nil {
@@ -283,57 +289,87 @@ func (wSvc *WiFiService) runStaMode(newWifiSettings *pb.WiFiSettings) (err error
 	if len(newWifiSettings.Client_BSSList) == 0 {
 		return errors.New("Error: WiFi mode set to station (STA) but no BSS configurations provided")
 	}
+	wSvc.StaIface = wSvc.IfaceName
+	prepareWifiInterfaceForSTA(wSvc.staIfaceName())
 
-	//scan for provided wifi
-	scanres, err := WifiScan(wSvc.IfaceName)
-	if err != nil {
-		return errors.New(fmt.Sprintf("Scanning for existing WiFi networks failed: %v", err))
+	targets := newWifiSettings.Client_BSSList
+	scanres, scanErr := WifiScan(wSvc.staIfaceName())
+	if scanErr != nil {
+		log.Printf("WiFi scan failed (%v); still trying configured SSID", scanErr)
+	} else if matching := MatchGivenBBSToScanResult(scanres, targets); len(matching) > 0 {
+		targets = matching
+	} else {
+		log.Printf("Configured SSID not seen in scan; still trying wpa_supplicant")
 	}
 
-	matchingBssList := MatchGivenBBSToScanResult(scanres, newWifiSettings.Client_BSSList)
-	if len(matchingBssList) == 0 {
-		return errors.New(fmt.Sprintf("Non of the given SSIDs found during scan\n"))
-	}
-
-	// Create config for the remaining networks
-	confstr, err := wifiCreateWpaSupplicantConfStringList(matchingBssList)
+	confstr, err := wifiCreateWpaSupplicantConfStringList(targets)
 	if err != nil {
 		return err
 	}
-	// store config to file
 	log.Printf("Creating wpa_supplicant configuration file at '%s'\n", wSvc.PathWpaSupplicantConf)
 	err = ioutil.WriteFile(wSvc.PathWpaSupplicantConf, []byte(confstr), os.ModePerm)
 	if err != nil {
 		return err
 	}
-
-	//ToDo: proper error handling, in case connection not possible
-	err = wSvc.StartWpaSupplicant(WPA_SUPPLICANT_CONNECT_TIMEOUT)
-	if err != nil {
-		return err
-	}
-
-
-	return nil
+	return wSvc.StartWpaSupplicant(WPA_SUPPLICANT_CONNECT_TIMEOUT)
 }
 
 // ToDo: Output monitor for AP-ENABLED (same approach as for wpa_supplicant)
-func (wSvc *WiFiService) runAPMode(newWifiSettings *pb.WiFiSettings) (err error) {
-	//generate hostapd.conf (overwrite old one)
-	hostapdCreateConfigFile2(newWifiSettings, wSvc.PathHostapdConf)
-
-	//start hostapd
-	err = wSvc.StartHostapd(HOSTAPD_WAIT_AP_UP_TIMEOUT)
-	if err != nil {
-		fmt.Println("Wait 2 seconds and retry to to start hostapd once...")
-		time.Sleep(2 * time.Second)
-		err = wSvc.StartHostapd(HOSTAPD_WAIT_AP_UP_TIMEOUT)
-		if err != nil {
-			return err
+func wifiAPAlreadyMatches(wSvc *WiFiService, want *pb.WiFiSettings) bool {
+	if wSvc == nil || want == nil || wSvc.State == nil {
+		return false
+	}
+	if want.Disabled || want.WorkingMode != pb.WiFiWorkingMode_AP {
+		return false
+	}
+	if wSvc.CmdHostapd == nil || wSvc.CmdHostapd.Process == nil {
+		return false
+	}
+	if wSvc.State.Mode != pb.WiFiStateMode_AP_UP {
+		return false
+	}
+	if hasMonitorVifOnPhy(wSvc.IfaceName) {
+		return false
+	}
+	if want.Ap_BSS == nil {
+		return false
+	}
+	if wSvc.State.Ssid != "" && wSvc.State.Ssid != want.Ap_BSS.SSID {
+		return false
+	}
+	if wSvc.State.Channel != 0 && wSvc.State.Channel != want.Channel {
+		return false
+	}
+	if cur := wSvc.State.CurrentSettings; cur != nil && cur.Ap_BSS != nil {
+		if cur.Ap_BSS.PSK != want.Ap_BSS.PSK || cur.AuthMode != want.AuthMode || cur.HideSsid != want.HideSsid {
+			return false
 		}
 	}
+	return true
+}
 
-	return nil
+func (wSvc *WiFiService) runAPMode(newWifiSettings *pb.WiFiSettings) (err error) {
+	if !waitForNetworkInterface(wSvc.IfaceName, wifiIfaceWait) {
+		return fmt.Errorf("WiFi interface '%s' not present", wSvc.IfaceName)
+	}
+
+	// nl80211 init failure is a chip/firmware race on AIC8800, not an 802.11n config problem.
+	// Recover the interface between attempts instead of toggling HT.
+	levels := []string{"soft", "hard", "hard", "reload", "reload"}
+	var last error
+	for i, level := range levels {
+		prepareWifiInterfaceForAPLevel(wSvc.IfaceName, level)
+		if err = hostapdCreateConfigFileMode(newWifiSettings, wSvc.PathHostapdConf, false); err != nil {
+			return err
+		}
+		last = wSvc.StartHostapd(HOSTAPD_WAIT_AP_UP_TIMEOUT)
+		if last == nil {
+			return nil
+		}
+		log.Printf("hostapd attempt %d (%s) failed: %v", i+1, level, last)
+		time.Sleep(2 * time.Second)
+	}
+	return last
 }
 
 func (wSvc *WiFiService) DeploySettings(newWifiSettings *pb.WiFiSettings) (wstate *pb.WiFiState, err error) {
@@ -343,15 +379,25 @@ func (wSvc *WiFiService) DeploySettings(newWifiSettings *pb.WiFiSettings) (wstat
 	wSvc.mutexSettings.Lock()
 	defer wSvc.mutexSettings.Unlock()
 
-
-	//ToDo: Dis/Enable nexmon if needed
-
-	//stop wpa_supplicant if needed
-	err = wSvc.StopWpaSupplicant()
-	if err != nil {
-		return wSvc.State, err
+	if newWifiSettings != nil {
+		newWifiSettings.Nexmon = false
 	}
-	//kill hostapd in case it is still running
+
+	if wifiAPAlreadyMatches(wSvc, newWifiSettings) {
+		log.Printf("WiFi AP already running (ssid=%q channel=%d); skipping hostapd restart", wSvc.State.GetSsid(), wSvc.State.GetChannel())
+		wSvc.State.CurrentSettings = newWifiSettings
+		return wSvc.State, nil
+	}
+
+	// Keep a USB-wifi STA session (wlan1) when only redeploying the onboard AP.
+	keepSta := wSvc.StaIface == "wlan1" && newWifiSettings != nil && newWifiSettings.WorkingMode == pb.WiFiWorkingMode_AP
+	if !keepSta {
+		err = wSvc.StopWpaSupplicant()
+		if err != nil {
+			return wSvc.State, err
+		}
+		wSvc.StaIface = ""
+	}
 	err = wSvc.StopHostapd()
 	if err != nil {
 		return wSvc.State, err
@@ -363,16 +409,25 @@ func (wSvc *WiFiService) DeploySettings(newWifiSettings *pb.WiFiSettings) (wstat
 	// WiFi network interface after changing the WiFi state.
 	// We do this after setting the respective WiFi mode (STA / AP / FAILOVER), but in order to make this modes
 	// work, we enable the interface first - regardless of its 'enabled' state.
+	if !waitForNetworkInterface(wSvc.IfaceName, wifiIfaceWait) {
+		return wSvc.State, fmt.Errorf("WiFi interface '%s' not present", wSvc.IfaceName)
+	}
+
+	writeNetworkManagerUnmanaged(wSvc.IfaceName)
+	stopWifiStationHelpers(wSvc.IfaceName)
+	runQuiet("ip", "link", "set", wSvc.IfaceName, "up")
+	_ = waitUntilIwReady(wSvc.IfaceName, 5*time.Second)
+
 	iface, tmperr := net.InterfaceByName(wSvc.IfaceName)
 	if tmperr == nil {
 		netlink.NetworkLinkUp(iface)
 	}
 
-	// Set proper regulatory domain
 	errReg := wifiSetReg(newWifiSettings.Regulatory)
 	if errReg != nil {
-		log.Printf("Error setting WiFi regulatory domain '%s': %v\n", newWifiSettings.Regulatory	, err) //we don't abort on error here
+		log.Printf("Error setting WiFi regulatory domain '%s': %v\n", newWifiSettings.Regulatory, errReg)
 	}
+	_ = waitUntilIwReady(wSvc.IfaceName, 3*time.Second)
 
 	var triggerEvent *pb.Event = nil
 	if !newWifiSettings.Disabled {
@@ -383,22 +438,35 @@ func (wSvc *WiFiService) DeploySettings(newWifiSettings *pb.WiFiSettings) (wstat
 			if err == nil {
 				triggerEvent = ConstructEventTrigger(common_web.TRIGGER_EVT_TYPE_WIFI_AP_STARTED)
 			}
-		case pb.WiFiWorkingMode_STA, pb.WiFiWorkingMode_STA_FAILOVER_AP:
+		case pb.WiFiWorkingMode_STA_FAILOVER_AP:
+			// Classic stock behavior on wlan0: try client first, fall back to AP.
+			// If AP comes up, optionally join wlan1 later so USB client can still
+			// provide an uplink for Share/VPN while the onboard AP stays usable.
+			log.Printf("WiFi: Client+Failover — trying STA on %s first", wSvc.IfaceName)
+			errSta := wSvc.runStaMode(newWifiSettings)
+			if errSta == nil {
+				err = nil
+				triggerEvent = ConstructEventTrigger(common_web.TRIGGER_EVT_TYPE_WIFI_CONNECTED_AS_STA)
+				log.Printf("WiFi: STA on %s succeeded (failover AP not needed)", wSvc.IfaceName)
+			} else {
+				log.Printf("WiFi: STA on %s failed (%v); starting Access Point", wSvc.IfaceName, errSta)
+				_ = wSvc.StopWpaSupplicant()
+				stopDhcpClientRaw(wSvc.IfaceName)
+				wSvc.StaIface = ""
+				err = wSvc.runAPMode(newWifiSettings)
+				if err == nil {
+					triggerEvent = ConstructEventTrigger(common_web.TRIGGER_EVT_TYPE_WIFI_AP_STARTED)
+					if ssid := wifiClientSSID(newWifiSettings); ssid != "" {
+						go wSvc.joinWlan1Later(ssid, wifiClientPSK(newWifiSettings))
+					}
+				}
+			}
+		case pb.WiFiWorkingMode_STA:
 			errSta := wSvc.runStaMode(newWifiSettings)
 			if errSta == nil {
 				triggerEvent = ConstructEventTrigger(common_web.TRIGGER_EVT_TYPE_WIFI_CONNECTED_AS_STA)
 			} else {
-				//in failover mode, we try to enable AP first
-				if newWifiSettings.WorkingMode == pb.WiFiWorkingMode_STA_FAILOVER_AP {
-					log.Println(errSta)
-					log.Printf("Trying to fail over to Access Point Mode...")
-					err = wSvc.runAPMode(newWifiSettings)
-					if err == nil {
-						triggerEvent = ConstructEventTrigger(common_web.TRIGGER_EVT_TYPE_WIFI_AP_STARTED)
-					}
-				} else {
-					err = errSta
-				}
+				err = errSta
 			}
 		default:
 			// None allowed working mode, so we leave wSvc as UNKNOWN
@@ -413,10 +481,25 @@ func (wSvc *WiFiService) DeploySettings(newWifiSettings *pb.WiFiSettings) (wstat
 		return wSvc.State, err
 	}
 
-	// At this point, we reestablish the interface settings
-	//ReInitNetworkInterface(wSvc.IfaceName)
-	if nim,err := wSvc.RootSvc.SubSysNetwork.GetManagedInterface(wSvc.IfaceName); err == nil {
-		nim.ReDeploy()
+	if nim, err := wSvc.RootSvc.SubSysNetwork.GetManagedInterface(wSvc.IfaceName); err == nil {
+		staUp := newWifiSettings.WorkingMode == pb.WiFiWorkingMode_STA ||
+			(newWifiSettings.WorkingMode == pb.WiFiWorkingMode_STA_FAILOVER_AP && triggerEvent != nil &&
+				wSvc.State != nil && wSvc.State.Mode == pb.WiFiStateMode_STA_CONNECTED)
+		if staUp {
+			if derr := applyStaDhcp(wSvc.RootSvc, wSvc.staIfaceName()); derr != nil {
+				log.Printf("WiFi STA DHCP: %v", derr)
+			}
+			bootShare := false
+			if wSvc.RootSvc.SubSysShare != nil {
+				bootShare = wSvc.RootSvc.SubSysShare.LoadBoot().ShareEnable
+			}
+			up := wSvc.staIfaceName()
+			if !bootShare {
+				shareStaUplink(up)
+			}
+		} else {
+			nim.ReDeploy()
+		}
 	}
 
 
@@ -445,12 +528,13 @@ func NewWifiService(rootSvc *Service) (res *WiFiService) {
 	ifName := wifi_if_name
 	err := wifiCheckExternalBinaries()
 	if err != nil {
-		panic(err)
+		log.Printf("WiFi helpers missing (%v); AP bring-up will fail until they are installed", err)
 	}
 
-	//Check interface existence
-	if exists := CheckInterfaceExistence(ifName); !exists {
-		panic(errors.New(fmt.Sprintf("WiFi interface '%s' not present")))
+	if CheckInterfaceExistence(ifName) {
+		writeNetworkManagerUnmanaged(ifName)
+	} else {
+		log.Printf("WiFi interface '%s' not present yet; continuing and retrying on deploy", ifName)
 	}
 
 	res = &WiFiService{
@@ -511,19 +595,32 @@ func (m *hostapdOutMonitor) Write(p []byte) (n int, err error) {
 	// otherwise we'd need to utilize an io.Reader
 	line := string(p)
 
-	switch {
-	case strings.Contains(line, "AP-DISABLED"):
-		log.Printf("Starting Access Point failed\n")
-		m.Lock()
-		defer m.Unlock()
-		m.result = false
-		m.resultReceived.Set()
-	case strings.Contains(line, "AP-ENABLED"):
+	// hostapd prints AP-DISABLED during a normal start (UNINITIALIZED->DISABLED->ENABLED).
+	// Treating that as failure killed hostapd before AP-ENABLED. AP-ENABLED wins.
+	if strings.Contains(line, "AP-ENABLED") {
 		log.Printf("Access point is up\n")
 		m.Lock()
 		defer m.Unlock()
 		m.result = true
 		m.resultReceived.Set()
+		return len(p), nil
+	}
+	failHints := []string{
+		"Failed to setup interface",
+		"Could not configure driver",
+		"Interface initialization failed",
+		"nl80211 driver initialization failed",
+		"Could not set channel",
+	}
+	for _, hint := range failHints {
+		if strings.Contains(line, hint) {
+			log.Printf("Starting Access Point failed: %s", strings.TrimSpace(line))
+			m.Lock()
+			defer m.Unlock()
+			m.result = false
+			m.resultReceived.Set()
+			break
+		}
 	}
 	return len(p), nil
 }
@@ -623,11 +720,21 @@ type BSS struct {
 }
 
 func WifiScan(ifName string) (result []BSS, err error) {
-	proc := exec.Command("/sbin/iw", ifName, "scan")
-	res, err := proc.CombinedOutput()
-	if err != nil {
-		return nil, errors.New(fmt.Sprintf("Error running scan: '%s'\niw output: %s", err, res))
+	var res []byte
+	var last error
+	for attempt := 1; attempt <= 3; attempt++ {
+		proc := exec.Command(iwBin(), "dev", ifName, "scan")
+		res, last = proc.CombinedOutput()
+		if last == nil {
+			break
+		}
+		log.Printf("iw scan attempt %d on %s failed: %v (%s)", attempt, ifName, last, strings.TrimSpace(string(res)))
+		time.Sleep(time.Second)
 	}
+	if last != nil {
+		return nil, errors.New(fmt.Sprintf("Error running scan: '%s'\niw output: %s", last, res))
+	}
+	err = nil
 
 	result, err = ParseIwScan(string(res))
 
@@ -641,19 +748,27 @@ func wifiCreateWpaSupplicantConfStringList(bsslist []*pb.WiFiBSSCfg) (config str
 		psk := bss.PSK
 		if len(psk) > 0 {
 			fmt.Println("Connecting WiFi with PSK")
-			proc := exec.Command("/usr/bin/wpa_passphrase", ssid, psk)
-			cres, err := proc.CombinedOutput()
-
-			if err != nil {
-				return "", errors.New(fmt.Sprintf("Error craeting wpa_supplicant.conf for SSID '%s' with PSK '%s': %s", ssid, psk, string(cres)))
+			passBin := wpaPassphraseBin()
+			if passBin == "" {
+				return "", errors.New("wpa_passphrase not found")
 			}
-			config += string(cres)
+			proc := exec.Command(passBin, ssid, psk)
+			cres, err := proc.CombinedOutput()
+			if err != nil {
+				return "", errors.New(fmt.Sprintf("Error creating wpa_supplicant.conf for SSID '%s' with PSK '%s': %s", ssid, psk, string(cres)))
+			}
+			block := string(cres)
+			if !strings.Contains(block, "scan_ssid=") {
+				block = strings.Replace(block, "}", "\tscan_ssid=1\n}", 1)
+			}
+			config += block
 		} else {
 			fmt.Println("Connecting WiFi with OPEN AUTH")
 			config += fmt.Sprintf(
 				`network={
 			ssid="%s"
 			key_mgmt=NONE
+			scan_ssid=1
 		}
 `, ssid)
 
@@ -681,7 +796,7 @@ func wifiCreateHostapdConfString(ws *pb.WiFiSettings) (config string, err error)
 	config += fmt.Sprintf("hw_mode=g\n")                                 //Use 2.4GHz band
 	config += fmt.Sprintf("ieee80211n=1\n")                              //Enable 802.111n
 	config += fmt.Sprintf("wmm_enabled=1\n")                             //Enable WMM
-	config += fmt.Sprintf("ht_capab=[HT40][SHORT-GI-20][DSSS_CCK-40]\n") // 40MHz channels with 20ns guard interval
+	config += fmt.Sprintf("ht_capab=[HT40][SHORT-GI-20]\n") // 40MHz channels with 20ns guard interval
 	config += fmt.Sprintf("macaddr_acl=0\n")                             //Accept all MAC addresses
 
 	config += fmt.Sprintf("ssid=%s\n", ws.Ap_BSS.SSID)
@@ -843,7 +958,7 @@ func ParseIwScan(scanresult string) (bsslist []BSS, err error) {
 }//ToDo: Create netlink based implementation (not relying on 'iw'): low priority
 
 func (wsvc WiFiService) UpdateStateFromIw() (err error) {
-	proc := exec.Command("/sbin/iw", "dev", wsvc.IfaceName, "info")
+	proc := exec.Command(iwBin(), "dev", wsvc.IfaceName, "info")
 	res, err := proc.CombinedOutput()
 	if err != nil {
 		return errors.New(fmt.Sprintf("Error fetching wifi info: '%s'\niw output: %s", err, res))
@@ -951,7 +1066,7 @@ func wifiSetReg(reg string) (err error) {
 
 	reg = strings.ToUpper(reg)
 
-	proc := exec.Command("/sbin/iw", "reg", "set", reg)
+	proc := exec.Command(iwBin(), "reg", "set", reg)
 	err = proc.Run()
 	if err != nil {
 		return err

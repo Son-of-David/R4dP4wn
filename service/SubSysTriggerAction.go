@@ -813,7 +813,10 @@ func (tam *TriggerActionManager) Start() {
 }
 
 func (tam *TriggerActionManager) Stop() {
-	tam.rootSvc.SubSysEvent.UnregisterReceiver(tam.evtRcv) // should end the processing loop, as the context of the event receiver is closed
+	if tam == nil || tam.rootSvc == nil || tam.rootSvc.SubSysEvent == nil || tam.evtRcv == nil {
+		return
+	}
+	tam.rootSvc.SubSysEvent.UnregisterReceiver(tam.evtRcv)
 }
 
 func NewTriggerActionManager(rootService *Service) (tam *TriggerActionManager) {

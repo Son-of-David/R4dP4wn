@@ -10,7 +10,7 @@ delay(500);
 type("notepad\n")
 delay(1000);
 for (var i = 0; i < 3; i++) {
-  type("Hello from P4wnP1 run " + i + " !\n");
+  type("Hello from R4d-P4wn run " + i + " !\n");
   type("Moving mouse right ...");
   moveStepped(500,0);
   type("and left\n");
@@ -19,7 +19,7 @@ for (var i = 0; i < 3; i++) {
 type("Let's type fast !!!!!!!!!!!!!!!\n")
 typingSpeed(0,0);
 for (var i = 3; i < 10; i++) {
-  type("Hello from P4wnP1 run " + i + " !\n");
+  type("Hello from R4d-P4wn run " + i + " !\n");
   type("Moving mouse right ...");
   moveStepped(500,0);
   type("and left\n");

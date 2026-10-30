@@ -30,12 +30,13 @@ const (
 	USB_EP_USAGE_CDC_SERIAL = 2
 	USB_EP_USAGE_UMS = 2
 	USB_EP_USAGE_MAX = 7
+	USB_EP_USAGE_MAX_DWC3 = 16
 
 	USB_GADGET_NAME = "mame82_gadget"
 	USB_GADGET_DIR_BASE      = "/sys/kernel/config/usb_gadget"
 	USB_GADGET_DIR           = USB_GADGET_DIR_BASE + "/" + USB_GADGET_NAME
 
-	USB_bcdDevice = "0x0100" //Version 1.00
+	USB_bcdDevice = "0x0101" //Version 1.01 (Windows re-reads OS descriptors)
 	USB_bcdUSB    = "0x0200" //mode: USB 2.0
 
 	// composite class / subclass / proto (needs single configuration)
@@ -97,6 +98,7 @@ type UsbGadgetManager struct {
 	// ToDo: variable, indicating if HIDScript is usable
 	hidCtl             *hid.HIDController // Points to an HID controller instance only if keyboard and/or mouse are enabled, nil otherwise
 	gadgetSettingsLock *sync.Mutex
+	udcWatchStop       chan struct{}
 }
 
 func (gm *UsbGadgetManager) HandleEvent(event hid.Event) {
@@ -111,6 +113,11 @@ func (gm *UsbGadgetManager) HidScriptUsable() error {
 	gm.gadgetSettingsLock.Lock()
 	defer gm.gadgetSettingsLock.Unlock()
 
+	if gm.hidCtl == nil {
+		if err := gm.initHIDControllerLocked(); err != nil {
+			return ErrHidNotUsable
+		}
+	}
 	if gm.hidCtl == nil {
 		return ErrHidNotUsable
 	}
@@ -192,13 +199,9 @@ func NewUSBGadgetManager(rooSvc *Service) (newUGM *UsbGadgetManager, err error) 
 	newUGM.State.DevicePath[USB_FUNCTION_HID_RAW_name] = ""
 
 
-	defGS := GetDefaultGadgetSettings()
-	//newUGM.State.UndeployedGadgetSettings = &defGS //preload state with default settings
-	err = newUGM.DeployGadgetSettings(&defGS)
-	if err != nil {
-		newUGM.Usable = false
-		return newUGM,nil
-	}
+	// Do not deploy here. Startup master template / servicestart.sh deploy once.
+	// Deploying now and again ~4s later tears down usb0/usb1 and drops the host.
+	log.Println("USB gadget manager ready; startup template will deploy the gadget")
 	return
 }
 
@@ -215,8 +218,14 @@ func ValidateGadgetSetting(gs *pb.GadgetSettings) error {
 	 */
 
 	log.Println("Validating gadget settings ...")
+	if gs == nil {
+		return errors.New("gadget settings are nil")
+	}
 
 	if gs.Use_RNDIS {
+		if gs.RndisSettings == nil {
+			return errors.New("RNDIS enabled but ethernet settings are missing")
+		}
 		_, err := net.ParseMAC(gs.RndisSettings.DevAddr)
 		if err != nil { return errors.New(fmt.Sprintf("Validation Error RNDIS DeviceAddress: %v", err))}
 
@@ -225,6 +234,9 @@ func ValidateGadgetSetting(gs *pb.GadgetSettings) error {
 	}
 
 	if gs.Use_CDC_ECM {
+		if gs.CdcEcmSettings == nil {
+			return errors.New("CDC ECM enabled but ethernet settings are missing")
+		}
 		_, err := net.ParseMAC(gs.CdcEcmSettings.DevAddr)
 		if err != nil { return errors.New(fmt.Sprintf("Validation Error CDC ECM DeviceAddress: %v", err))}
 
@@ -242,11 +254,10 @@ func ValidateGadgetSetting(gs *pb.GadgetSettings) error {
 	if gs.Use_HID_KEYBOARD { sumEp += USB_EP_USAGE_HID_KEYBOARD }
 	if gs.Use_SERIAL { sumEp += USB_EP_USAGE_CDC_SERIAL }
 
-	strConsumption := fmt.Sprintf("Gadget Settings consume %v out of %v available USB Endpoints\n", sumEp, USB_EP_USAGE_MAX)
+	strConsumption := fmt.Sprintf("Gadget Settings consume %d out of %d available USB Endpoints\n", sumEp, usbEndpointBudget())
 	log.Print(strConsumption)
-	if sumEp > USB_EP_USAGE_MAX { return errors.New(strConsumption)}
+	if sumEp > usbEndpointBudget() { return errors.New(strConsumption)}
 
-	//check if composite gadget is enabled without functions
 	if gs.Enabled &&
 		!gs.Use_CDC_ECM &&
 		!gs.Use_RNDIS &&
@@ -308,44 +319,231 @@ func pollForUSBEthernet(timeout time.Duration) error {
 
 
 
-//depends on `lsmod` binary
-func CheckLibComposite() error {
-	log.Println("Checking for libcomposite...")
-	out, err := exec.Command("lsmod").Output()
+func usbEndpointBudget() int {
+	name, err := getUDCName()
 	if err != nil {
-		log.Println("lsmod failed")
-		log.Panic(err)
+		return USB_EP_USAGE_MAX
+	}
+	lname := strings.ToLower(name)
+	if strings.Contains(lname, "dwc2") || strings.Contains(lname, "20980000") {
+		return USB_EP_USAGE_MAX
+	}
+	return USB_EP_USAGE_MAX_DWC3
+}
+
+func ensureConfigFS() error {
+	if _, err := os.Stat(USB_GADGET_DIR_BASE); err == nil {
+		return nil
+	}
+	_ = os.MkdirAll("/sys/kernel/config", 0755)
+	if err := exec.Command("mount", "-t", "configfs", "none", "/sys/kernel/config").Run(); err != nil {
+		if _, err2 := os.Stat(USB_GADGET_DIR_BASE); err2 == nil {
+			return nil
+		}
 		return err
 	}
+	return nil
+}
 
-	if strings.Contains(string(out), "libcomposite") {
-		log.Println("... libcomposite loaded")
-		return nil
+func isOTGRolePath(path string) bool {
+	l := strings.ToLower(path)
+	// Never touch the RK3566 USB3 host controller (fd000000).
+	if strings.Contains(l, "fd000000") || strings.Contains(l, "usb_host1") {
+		return false
+	}
+	return strings.Contains(l, "fcc00000") || strings.Contains(l, "fc000000") ||
+		strings.Contains(l, "dwc2") || strings.Contains(l, "20980000")
+}
+
+func writeUSBRoleFile(path, value string) bool {
+	if !isOTGRolePath(path) {
+		return false
+	}
+	type result struct {
+		err  error
+		prev string
+	}
+	ch := make(chan result, 1)
+	go func() {
+		prev, _ := ioutil.ReadFile(path)
+		err := ioutil.WriteFile(path, []byte(value+"\n"), 0644)
+		ch <- result{err, strings.TrimSpace(string(prev))}
+	}()
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			log.Printf("USB role %s: %v (was %q)", path, r.err, r.prev)
+			return false
+		}
+		log.Printf("USB role %s: %q -> %q", path, r.prev, value)
+		return true
+	case <-time.After(2 * time.Second):
+		log.Printf("USB role %s: timed out writing %q (continuing)", path, value)
+		return false
+	}
+}
+
+func collectOTGRolePaths() []string {
+	globs := []string{
+		"/sys/kernel/debug/usb/*/mode",
+		"/sys/class/usb_role/*/role",
+		"/sys/class/udc/*/device/mode",
+		"/sys/devices/platform/fcc00000.usb/usb_role/*/role",
+		"/sys/devices/platform/fcc00000.dwc3/usb_role/*/role",
+		"/sys/bus/platform/devices/fcc00000.usb/usb_role/*/role",
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, g := range globs {
+		matches, _ := filepath.Glob(g)
+		for _, path := range matches {
+			if seen[path] || !isOTGRolePath(path) {
+				continue
+			}
+			seen[path] = true
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+func logUDCState(udc string) {
+	if udc == "" {
+		return
+	}
+	st := "?"
+	if b, err := ioutil.ReadFile("/sys/class/udc/" + udc + "/state"); err == nil {
+		st = strings.TrimSpace(string(b))
+	}
+	mode := "?"
+	for _, p := range []string{
+		"/sys/kernel/debug/usb/" + strings.TrimSuffix(udc, ".usb") + ".dwc3/mode",
+		"/sys/kernel/debug/usb/" + udc + "/mode",
+	} {
+		if b, err := ioutil.ReadFile(p); err == nil {
+			mode = strings.TrimSpace(string(b))
+			break
+		}
+	}
+	log.Printf("USB UDC %s state=%s dwc3_mode=%s", udc, st, mode)
+}
+
+func ensureDebugFS() {
+	if _, err := os.Stat("/sys/kernel/debug/usb"); err == nil {
+		return
+	}
+	_ = os.MkdirAll("/sys/kernel/debug", 0755)
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Command("mount", "-t", "debugfs", "none", "/sys/kernel/debug").Run()
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			log.Printf("USB role: could not mount debugfs: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		log.Printf("USB role: debugfs mount timed out (continuing)")
+	}
+}
+
+func setUSBRoleDevice() {
+	ensureDebugFS()
+	udc, _ := getUDCName()
+	log.Printf("USB role: targeting OTG UDC %q only", udc)
+
+	candidates := collectOTGRolePaths()
+	if udc != "" && isOTGRolePath(udc) {
+		dwc3 := strings.TrimSuffix(udc, ".usb") + ".dwc3"
+		for _, path := range []string{
+			"/sys/kernel/debug/usb/" + udc + "/mode",
+			"/sys/kernel/debug/usb/" + dwc3 + "/mode",
+			"/sys/class/udc/" + udc + "/device/mode",
+			"/sys/class/usb_role/" + udc + "-role-switch/role",
+			"/sys/devices/platform/" + udc + "/usb_role/" + udc + "-role-switch/role",
+			"/sys/bus/platform/devices/" + udc + "/usb_role/" + udc + "-role-switch/role",
+		} {
+			if _, err := os.Stat(path); err == nil {
+				found := false
+				for _, c := range candidates {
+					if c == path {
+						found = true
+						break
+					}
+				}
+				if !found {
+					candidates = append(candidates, path)
+				}
+			}
+		}
 	}
 
-	out, err = exec.Command("rmmod", "libcomposite").CombinedOutput()
+	wrote := 0
+	for _, path := range candidates {
+		// dwc3 debugfs "mode" and usb_role-switch both take host/device, not "peripheral".
+		if writeUSBRoleFile(path, "device") {
+			wrote++
+		}
+	}
+	if wrote == 0 {
+		log.Printf("USB role: no writable OTG mode/role node (continuing without blocking WiFi)")
+	}
+	logUDCState(udc)
+}
+
+func loadUSBFunctionModules() {
+	for _, mod := range []string{
+		"libcomposite",
+		"usb_f_rndis",
+		"usb_f_ecm",
+		"usb_f_ncm",
+		"usb_f_hid",
+		"usb_f_mass_storage",
+		"usb_f_acm",
+	} {
+		if err := exec.Command("modprobe", mod).Run(); err != nil {
+			log.Printf("modprobe %s: %v", mod, err)
+		}
+	}
+}
+
+func CheckLibComposite() error {
+	log.Println("Checking for libcomposite...")
+	if err := ensureConfigFS(); err != nil {
+		log.Printf("configfs not available: %v", err)
+	}
+	loadUSBFunctionModules()
+
+	out, err := exec.Command("lsmod").Output()
 	if err != nil {
-		log.Println("rmmod failed")
-	}
-
-	if strings.Contains(string(out), "builtin") {
-		log.Println("... libcomposite available as builtin")
-		return nil
-	} else {
-		log.Println("... libcomposite is NOT a builtin?")
-		log.Println(out)
-	}
-
-	//if here, libcomposite isn't loaded ... try to load
-	log.Println("Libcomposite not loaded, trying to fix ...")
-	err = exec.Command("modprobe", "libcomposite").Run()
-	if err == nil {
+		log.Printf("lsmod failed: %v", err)
+	} else if strings.Contains(string(out), "libcomposite") {
 		log.Println("... libcomposite loaded")
+		return nil
 	}
 
-	log.Println(err)
-	log.Panic(err)
-	return err
+	if _, err := os.Stat(USB_GADGET_DIR_BASE); err == nil {
+		log.Println("... usb gadget configfs present")
+		return nil
+	}
+	return errors.New("libcomposite / usb gadget configfs not available")
+}
+
+func udcPreference(name string) int {
+	l := strings.ToLower(name)
+	switch {
+	case strings.Contains(l, "dummy"):
+		return -100
+	case strings.Contains(l, "dwc3"):
+		return 100
+	case strings.Contains(l, "fcc00000"), strings.Contains(l, "fc000000"), strings.Contains(l, "ff400000"):
+		return 90
+	case strings.Contains(l, "dwc2"), strings.Contains(l, "20980000"):
+		// Raspberry Pi UDC, or a leftover dwc2 module on RK3566 that is not the Type-C port.
+		return 10
+	default:
+		return 50
+	}
 }
 
 func getUDCName() (string, error) {
@@ -356,8 +554,44 @@ func getUDCName() (string, error) {
 	if len(files) < 1 {
 		return "", errors.New("couldn't find working UDC driver")
 	}
-	return files[0].Name(), nil
+	best := files[0].Name()
+	bestScore := udcPreference(best)
+	for _, f := range files {
+		name := f.Name()
+		if s := udcPreference(name); s > bestScore {
+			best = name
+			bestScore = s
+		}
+	}
+	return best, nil
+}
 
+func logGadgetLinkState() {
+	for _, name := range []string{"usb0", "usb1", "usbeth"} {
+		oper := "missing"
+		if b, err := ioutil.ReadFile("/sys/class/net/" + name + "/operstate"); err == nil {
+			oper = strings.TrimSpace(string(b))
+		}
+		carrier := "?"
+		if b, err := ioutil.ReadFile("/sys/class/net/" + name + "/carrier"); err == nil {
+			carrier = strings.TrimSpace(string(b))
+		}
+		log.Printf("USB ethernet %s operstate=%s carrier=%s", name, oper, carrier)
+	}
+}
+
+func logSelectedUDC() {
+	name, err := getUDCName()
+	if err != nil {
+		log.Printf("Available UDCs: none (%v)", err)
+		return
+	}
+	files, _ := ioutil.ReadDir("/sys/class/udc")
+	names := make([]string, 0, len(files))
+	for _, f := range files {
+		names = append(names, f.Name())
+	}
+	log.Printf("Available UDCs: %s; selected %s", strings.Join(names, ", "), name)
 }
 
 func (gm *UsbGadgetManager) ParseGadgetState(gadgetName string) (result *pb.GadgetSettings, err error) {
@@ -446,26 +680,26 @@ func (gm *UsbGadgetManager) ParseGadgetState(gadgetName string) (result *pb.Gadg
 		}
 	}
 
-	//USB CDC ECM
-	if _, err1 := os.Stat(gadgetDir +"/configs/c.1/ecm.usb1"); !os.IsNotExist(err1) {
+	//USB CDC ECM or NCM (NCM is what Windows 10/11 actually speaks)
+	ethFunc := ""
+	if _, err1 := os.Stat(gadgetDir + "/configs/c.1/ncm.usb1"); !os.IsNotExist(err1) {
+		ethFunc = "ncm.usb1"
+	} else if _, err1 := os.Stat(gadgetDir + "/configs/c.1/ecm.usb1"); !os.IsNotExist(err1) {
+		ethFunc = "ecm.usb1"
+	}
+	if ethFunc != "" {
 		result.Use_CDC_ECM = true
-
 		result.CdcEcmSettings = &pb.GadgetSettingsEthernet{}
-
-		if res, err := ioutil.ReadFile(gadgetDir + "/functions/ecm.usb1/host_addr"); err != nil {
-			err1 := errors.New(fmt.Sprintf("gadget %s error reading CDC ECM host_addr", gadgetName))
-			return nil, err1
+		if res, err := ioutil.ReadFile(gadgetDir + "/functions/" + ethFunc + "/host_addr"); err != nil {
+			return nil, errors.New(fmt.Sprintf("gadget %s error reading %s host_addr", gadgetName, ethFunc))
 		} else {
 			result.CdcEcmSettings.HostAddr = strings.TrimSuffix(string(res), "\000\n")
 		}
-
-		if res, err := ioutil.ReadFile(gadgetDir + "/functions/ecm.usb1/dev_addr"); err != nil {
-			err1 := errors.New(fmt.Sprintf("gadget %s error reading CDC ECM dev_addr", gadgetName))
-			return nil, err1
+		if res, err := ioutil.ReadFile(gadgetDir + "/functions/" + ethFunc + "/dev_addr"); err != nil {
+			return nil, errors.New(fmt.Sprintf("gadget %s error reading %s dev_addr", gadgetName, ethFunc))
 		} else {
 			result.CdcEcmSettings.DevAddr = strings.TrimSuffix(string(res), "\000\n")
 		}
-
 	} else {
 		// we provide GadgetSettingsEthernet with default MAC adresses anyway, to have defaults in case CDC ECM should be enabled
 		result.CdcEcmSettings = &pb.GadgetSettingsEthernet{
@@ -543,6 +777,35 @@ func (gm *UsbGadgetManager) ParseGadgetState(gadgetName string) (result *pb.Gadg
 
 // This command is working on the active gadget directly, so changes aren't reflected back
 // to the GadgetSettingsState
+func ensureUMSBackingFile(settings *pb.GadgetSettings) {
+	if settings.UmsSettings == nil {
+		settings.UmsSettings = &pb.GadgetSettingsUMS{}
+	}
+	if strings.TrimSpace(settings.UmsSettings.File) == "" {
+		settings.UmsSettings.File = "default.bin"
+	}
+	if settings.UmsSettings.Cdrom {
+		return
+	}
+	dir := common.PATH_IMAGE_FLASHDRIVE
+	_ = os.MkdirAll(dir, 0755)
+	path := dir + "/" + settings.UmsSettings.File
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	log.Printf("USB UMS: creating %s (32MiB FAT)", path)
+	f, err := os.Create(path)
+	if err != nil {
+		log.Printf("USB UMS: could not create %s: %v", path, err)
+		return
+	}
+	_ = f.Truncate(32 << 20)
+	_ = f.Close()
+	if err := exec.Command("mkfs.vfat", "-n", "P4WNP1", path).Run(); err != nil {
+		log.Printf("USB UMS: mkfs.vfat %s: %v (image still usable as raw)", path, err)
+	}
+}
+
 func MountUMSFile(filename string) error {
 	funcdir := USB_GADGET_DIR + "/functions/mass_storage.ms1"
 	err := ioutil.WriteFile(funcdir+"/lun.0/file", []byte(filename), os.ModePerm)
@@ -557,7 +820,12 @@ func (gm *UsbGadgetManager) DeployGadgetSettings(settings *pb.GadgetSettings) (e
 		return ErrUsbNotUsable
 	}
 
-	//fmt.Println("DeployGadgetSettings before lock ...")
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("USB gadget deploy panic (WiFi left running): %v", r)
+			err = fmt.Errorf("USB gadget deploy panic: %v", r)
+		}
+	}()
 
 	//Lock, only one change at a time
 	gm.gadgetSettingsLock.Lock()
@@ -567,6 +835,14 @@ func (gm *UsbGadgetManager) DeployGadgetSettings(settings *pb.GadgetSettings) (e
 	err = ValidateGadgetSetting(settings)
 	if err != nil {
 		return
+	}
+
+	if settings.Use_RNDIS && settings.Use_CDC_ECM {
+		log.Printf("USB: RNDIS and CDC ECM/NCM both enabled; keeping RNDIS only so Windows does not drop the link")
+		settings.Use_CDC_ECM = false
+	}
+	if settings.Use_UMS {
+		ensureUMSBackingFile(settings)
 	}
 
 	//Crash fix: abort HID controller before destorying gadget, to avoid crashes by attempting to close filedescriptors of non existent files
@@ -664,15 +940,17 @@ func (gm *UsbGadgetManager) DeployGadgetSettings(settings *pb.GadgetSettings) (e
 	}
 
 	if settings.Use_CDC_ECM {
-		log.Printf("... creating USB CDC ECM function")
 		usesUSBEthernet = true
-		os.Mkdir(USB_GADGET_DIR+"/functions/ecm.usb1", os.ModePerm) //create CDC ECM function
-		ioutil.WriteFile(USB_GADGET_DIR+"/functions/ecm.usb1/host_addr", []byte(settings.CdcEcmSettings.HostAddr), os.ModePerm)
-		ioutil.WriteFile(USB_GADGET_DIR+"/functions/ecm.usb1/dev_addr", []byte(settings.CdcEcmSettings.DevAddr), os.ModePerm)
-
-		//activate function by symlinking to config 1
-		err := os.Symlink(USB_GADGET_DIR+"/functions/ecm.usb1", USB_GADGET_DIR+"/configs/c.1/ecm.usb1")
-		if err != nil {
+		ethFunc := "ncm.usb1"
+		if err := os.Mkdir(USB_GADGET_DIR+"/functions/"+ethFunc, os.ModePerm); err != nil {
+			log.Printf("NCM function not available (%v), falling back to CDC ECM", err)
+			ethFunc = "ecm.usb1"
+			_ = os.Mkdir(USB_GADGET_DIR+"/functions/"+ethFunc, os.ModePerm)
+		}
+		log.Printf("... creating USB %s function", ethFunc)
+		ioutil.WriteFile(USB_GADGET_DIR+"/functions/"+ethFunc+"/host_addr", []byte(settings.CdcEcmSettings.HostAddr), os.ModePerm)
+		ioutil.WriteFile(USB_GADGET_DIR+"/functions/"+ethFunc+"/dev_addr", []byte(settings.CdcEcmSettings.DevAddr), os.ModePerm)
+		if err := os.Symlink(USB_GADGET_DIR+"/functions/"+ethFunc, USB_GADGET_DIR+"/configs/c.1/"+ethFunc); err != nil {
 			log.Println(err)
 		}
 	}
@@ -781,31 +1059,43 @@ func (gm *UsbGadgetManager) DeployGadgetSettings(settings *pb.GadgetSettings) (e
 		if err != nil {
 			return err
 		}
+		logSelectedUDC()
+		_ = ioutil.WriteFile(USB_GADGET_DIR+"/UDC", []byte("\x00"), os.ModePerm)
+		time.Sleep(300 * time.Millisecond)
+		setUSBRoleDevice()
 		log.Printf("Enabeling gadget for UDC: %s\n", udcName)
 		if err = ioutil.WriteFile(USB_GADGET_DIR+"/UDC", []byte(udcName), os.ModePerm); err != nil {
 			fmt.Println("... error enabling gadget:", err)
 			return err
 		}
+		if bound, err := ioutil.ReadFile(USB_GADGET_DIR + "/UDC"); err == nil {
+			log.Printf("Gadget bound to UDC %q", strings.TrimSpace(string(bound)))
+		}
+		time.Sleep(400 * time.Millisecond)
+		logUDCState(udcName)
+		st := ""
+		if b, err := ioutil.ReadFile("/sys/class/udc/" + udcName + "/state"); err == nil {
+			st = strings.TrimSpace(string(b))
+		}
+		if st == "not attached" || st == "" {
+			log.Printf("USB UDC still %q after bind; forcing device mode again", st)
+			setUSBRoleDevice()
+			time.Sleep(300 * time.Millisecond)
+			logUDCState(udcName)
+		}
+		logGadgetLinkState()
+		gm.startUDCWatch(udcName)
 
 		//update device path
+		_ = exec.Command("udevadm", "settle", "--timeout=2").Run()
 		log.Println("Retrieving path to HID devices")
-		if devPath,errF := enumDevicePath(USB_FUNCTION_HID_KEYBOARD_name); errF == nil  { gm.State.DevicePath[USB_FUNCTION_HID_KEYBOARD_name] = devPath }
-		if devPath,errF := enumDevicePath(USB_FUNCTION_HID_MOUSE_name); errF == nil  { gm.State.DevicePath[USB_FUNCTION_HID_MOUSE_name] = devPath }
-		if devPath,errF := enumDevicePath(USB_FUNCTION_HID_RAW_name); errF == nil  { gm.State.DevicePath[USB_FUNCTION_HID_RAW_name] = devPath }
+		gm.State.DevicePath[USB_FUNCTION_HID_KEYBOARD_name] = waitHIDDevicePath(USB_FUNCTION_HID_KEYBOARD_name, "/dev/hidg0")
+		gm.State.DevicePath[USB_FUNCTION_HID_MOUSE_name] = waitHIDDevicePath(USB_FUNCTION_HID_MOUSE_name, "/dev/hidg1")
+		gm.State.DevicePath[USB_FUNCTION_HID_RAW_name] = waitHIDDevicePath(USB_FUNCTION_HID_RAW_name, "")
 
-		//if Keyboard or Mouse are deployed, grab a HIDController Instance else set it to nil (the old HIDController object won't be destroyed)
 		if settings.Use_HID_KEYBOARD || settings.Use_HID_MOUSE {
-			devPathKeyboard := gm.State.DevicePath[USB_FUNCTION_HID_KEYBOARD_name]
-			devPathMouse := gm.State.DevicePath[USB_FUNCTION_HID_MOUSE_name]
-
-			//log.Printf("Starting HID controller (kbd %s, mouse %s)...\n", devPathKeyboard, devPathMouse)
-			var errH error
-			gm.hidCtl, errH = hid.NewHIDController(context.Background(), devPathKeyboard, common.PATH_KEYBOARD_LANGUAGE_MAPS, devPathMouse)
-			gm.hidCtl.SetEventHandler(gm)
-			if errH != nil {
-				log.Printf("ERROR: Couldn't bring up an instance of HIDController for keyboard: '%s', mouse: '%s' and mapping path '%s'\nReason: %v\n", devPathKeyboard, devPathMouse, common.PATH_KEYBOARD_LANGUAGE_MAPS, errH)
-			} else {
-				log.Printf("HIDController for keyboard: '%s', mouse: '%s' and mapping path '%s' initialized\n", devPathKeyboard, devPathMouse, common.PATH_KEYBOARD_LANGUAGE_MAPS)
+			if errH := gm.initHIDControllerLocked(); errH != nil {
+				log.Printf("ERROR: HID controller: %v", errH)
 			}
 		} else {
 			if gm.hidCtl != nil { gm.hidCtl.Abort() }
@@ -839,6 +1129,121 @@ func (gm *UsbGadgetManager) DeployGadgetSettings(settings *pb.GadgetSettings) (e
 	}
 
 	log.Printf("... done")
+	return nil
+}
+
+func (gm *UsbGadgetManager) stopUDCWatch() {
+	if gm.udcWatchStop != nil {
+		close(gm.udcWatchStop)
+		gm.udcWatchStop = nil
+	}
+}
+
+func (gm *UsbGadgetManager) startUDCWatch(udcName string) {
+	gm.stopUDCWatch()
+	stop := make(chan struct{})
+	gm.udcWatchStop = stop
+	go gm.watchUDCReconnect(udcName, stop)
+}
+
+func rebindGadgetUDC(udcName string) {
+	log.Printf("USB: rebinding UDC %s for a clean host enumeration", udcName)
+	_ = ioutil.WriteFile(USB_GADGET_DIR+"/UDC", []byte("\x00"), os.ModePerm)
+	time.Sleep(400 * time.Millisecond)
+	if err := ioutil.WriteFile(USB_GADGET_DIR+"/UDC", []byte(udcName), os.ModePerm); err != nil {
+		log.Printf("USB: UDC rebind failed: %v", err)
+		return
+	}
+	time.Sleep(300 * time.Millisecond)
+	logGadgetLinkState()
+}
+
+func (gm *UsbGadgetManager) watchUDCReconnect(udcName string, stop <-chan struct{}) {
+	statePath := "/sys/class/udc/" + udcName + "/state"
+	prev := ""
+	sawDetach := false
+	ignoreUntil := time.Time{}
+	for {
+		select {
+		case <-stop:
+			return
+		case <-time.After(400 * time.Millisecond):
+		}
+		b, err := ioutil.ReadFile(statePath)
+		if err != nil {
+			continue
+		}
+		state := strings.TrimSpace(string(b))
+		if state != prev && prev != "" {
+			log.Printf("USB UDC %s state %s -> %s", udcName, prev, state)
+		}
+		if time.Now().Before(ignoreUntil) {
+			prev = state
+			continue
+		}
+		if state == "not attached" {
+			sawDetach = true
+		} else if sawDetach && state != "not attached" {
+			sawDetach = false
+			ignoreUntil = time.Now().Add(4 * time.Second)
+			log.Printf("USB: host attached after disconnect; rebinding UDC so Windows gets a fresh RNDIS enum")
+			rebindGadgetUDC(udcName)
+		}
+		prev = state
+	}
+}
+
+func waitHIDDevicePath(funcName, fallback string) string {
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if p, err := enumDevicePath(funcName); err == nil && p != "" {
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+		if fallback != "" {
+			if _, err := os.Stat(fallback); err == nil {
+				return fallback
+			}
+		}
+		if time.Now().After(deadline) {
+			if fallback != "" {
+				if _, err := os.Stat(fallback); err == nil {
+					return fallback
+				}
+			}
+			return ""
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+func (gm *UsbGadgetManager) initHIDControllerLocked() error {
+	kbd := gm.State.DevicePath[USB_FUNCTION_HID_KEYBOARD_name]
+	mouse := gm.State.DevicePath[USB_FUNCTION_HID_MOUSE_name]
+	if kbd == "" {
+		kbd = waitHIDDevicePath(USB_FUNCTION_HID_KEYBOARD_name, "/dev/hidg0")
+		gm.State.DevicePath[USB_FUNCTION_HID_KEYBOARD_name] = kbd
+	}
+	if mouse == "" {
+		mouse = waitHIDDevicePath(USB_FUNCTION_HID_MOUSE_name, "/dev/hidg1")
+		gm.State.DevicePath[USB_FUNCTION_HID_MOUSE_name] = mouse
+	}
+	if kbd == "" && mouse == "" {
+		return fmt.Errorf("no HID gadget device nodes (expected /dev/hidg0)")
+	}
+	mapPath := common.PATH_KEYBOARD_LANGUAGE_MAPS
+	if _, err := os.Stat(mapPath); err != nil {
+		return fmt.Errorf("keyboard maps missing at %s (copy dist/keymaps there): %v", mapPath, err)
+	}
+	ctl, errH := hid.NewHIDController(context.Background(), kbd, mapPath, mouse)
+	if errH != nil || ctl == nil {
+		gm.hidCtl = nil
+		return fmt.Errorf("keyboard %q mouse %q maps %q: %v", kbd, mouse, mapPath, errH)
+	}
+	ctl.SetEventHandler(gm)
+	gm.hidCtl = ctl
+	log.Printf("HIDController for keyboard: '%s', mouse: '%s' initialized", kbd, mouse)
 	return nil
 }
 
@@ -901,6 +1306,8 @@ func (gm *UsbGadgetManager) DestroyAllGadgets() error {
 }
 
 func (gm *UsbGadgetManager) DestroyGadget(gadgetName string) error {
+	gm.stopUDCWatch()
+
 
 
 

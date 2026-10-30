@@ -256,11 +256,41 @@ func (jsGS *jsGadgetSettings) fromGo(gs *pb.GadgetSettings) {
 	}
 }
 
+func defaultGadgetSettingsProto() *pb.GadgetSettings {
+	return &pb.GadgetSettings{
+		Enabled:          true,
+		Vid:              "0x1d6b",
+		Pid:              "0x1347",
+		Manufacturer:     "MaMe82",
+		Product:          "P4wnP1 by MaMe82",
+		Serial:           "deadbeef1337",
+		Use_CDC_ECM:      true,
+		Use_RNDIS:        true,
+		Use_HID_KEYBOARD: true,
+		Use_HID_MOUSE:    true,
+		Use_HID_RAW:      false,
+		Use_UMS:          true,
+		Use_SERIAL:       false,
+		RndisSettings: &pb.GadgetSettingsEthernet{
+			HostAddr: "42:63:65:12:34:56",
+			DevAddr:  "42:63:65:56:34:12",
+		},
+		CdcEcmSettings: &pb.GadgetSettingsEthernet{
+			HostAddr: "42:63:66:12:34:56",
+			DevAddr:  "42:63:66:56:34:12",
+		},
+		UmsSettings: &pb.GadgetSettingsUMS{
+			File:  "",
+			Cdrom: false,
+		},
+	}
+}
+
 func NewUSBGadgetSettings() *jsGadgetSettings {
 	gs := &jsGadgetSettings{
 		Object: O(),
 	}
-	gs.fromGo(&pb.GadgetSettings{}) //start with empty settings, but create nested structs
+	gs.fromGo(defaultGadgetSettingsProto())
 
 	return gs
 }
@@ -665,14 +695,14 @@ func (target *jsWiFiSettings) fromGo(src *pb.WiFiSettings) {
 
 func NewWifiSettings() *jsWiFiSettings {
 	res := &jsWiFiSettings{Object: O()}
-	res.Disabled = true
-	res.Mode = int(pb.WiFiWorkingMode_UNKNOWN)
+	res.Disabled = false
+	res.Mode = int(pb.WiFiWorkingMode_AP)
 	res.Name = "default"
 	res.Ap_BSS = &jsWiFiBSSCfg{Object: O()}
-	res.Ap_BSS.PSK = ""
-	res.Ap_BSS.SSID = ""
-	res.AuthMode = int(pb.WiFiAuthMode_OPEN)
-	res.Channel = 1
+	res.Ap_BSS.PSK = "MaMe82-P4wnP1"
+	res.Ap_BSS.SSID = "P4wnP1"
+	res.AuthMode = int(pb.WiFiAuthMode_WPA2_PSK)
+	res.Channel = 6
 	res.Nexmon = false
 	res.Client_BSSList = js.Global.Get("Array").New()
 	//no entry in array, push one (needed in vue model)

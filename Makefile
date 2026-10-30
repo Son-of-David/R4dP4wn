@@ -1,143 +1,106 @@
 SHELL := /bin/bash
-PATH := /usr/local/go/bin:$(PATH)
-
-all: compile
-
-test:
-#	export PATH="$$PATH:/usr/local/go/bin" # put into ~/.profile
-	echo $(CURDIR)
-	echo $(HOME)
 
 # make dep runs without sudo
 dep:
-	# sudo apt-get -y install git screen hostapd autossh bluez bluez-tools bridge-utils policykit-1 genisoimage iodine haveged
-	# sudo apt-get -y install tcpdump
-	# sudo apt-get -y install python-pip python-dev
-
+	sudo apt update
+	sudo apt-get -y install git screen hostapd-wpe autossh bluez iodine haveged
+	sudo apt-get -y install tcpdump socat
+	sudo apt-get -y install python3-pip python3-dev
+	sudo apt-get -y install hostapd avahi-daemon haveged
 	# before installing dnsmasq, the nameserver from /etc/resolv.conf should be saved
 	# to restore after install (gets overwritten by dnsmasq package)
-	# cp /etc/resolv.conf /tmp/backup_resolv.conf
-	# sudo apt-get -y install dnsmasq
-	# sudo /bin/bash -c 'cat /tmp/backup_resolv.conf > /etc/resolv.conf'
+	cp /etc/resolv.conf /tmp/backup_resolv.conf
+	sudo apt-get -y install dnsmasq
+	sudo /bin/bash -c 'cat /tmp/backup_resolv.conf > /etc/resolv.conf'
 
 	# python dependencies for HIDbackdoor
-	# sudo pip install pycrypto # already present on stretch
-	# sudo pip install pydispatcher
+	sudo pip install pycryptodome --break-system-packages # already present on stretch
+	
+        # dependencies for kismet gpsd and airgeddon
+	sudo apt-get -y install kismet gpsd gpsd-clients airgeddon
+	sudo apt-get -y install bettercap-ui isc-dhcp-server-ldap php-cgi lighttpd-mod-webdav
+	sudo apt-get -y install resolvconf ffmpeg php-fpm lighttpd-modules-dbi mmdb-bin libsox-fmt-alsa
+	sudo apt-get -y install spawn-fcgi lighttpd-modules-lua gpsd-clients 
+	sudo apt-get -y install libsox-fmt-oss lighttpd-doc xfonts-cyrillic tmux
+        #All airgeddon tools
+        #sudo apt-get -y install ettercap hostapd-mana hcxtools bully pixiewps asleap hashcat wireshark-cli mdk4 hcxdumptool  
 
-	# install go
-	# wget https://storage.googleapis.com/golang/go1.10.linux-armv6l.tar.gz
-	# sudo tar -C /usr/local -xzf go1.10.linux-armv6l.tar.gz
-
-	export PATH="$$PATH:/usr/local/go/bin"
-
-	# put into ~/.profile
-	# ToDo: check if already present
-	# echo "export PATH=\$$PATH:/usr/local/go/bin" >> ~/.profile
-	# sudo bash -c 'echo export PATH=\$$PATH:/usr/local/go/bin >> ~/.profile'
-
-	# install gopherjs
-	go install github.com/gopherjs/gopherjs
-
-	# we don't need protoc + protoc-grpc-web, because the proto file is shipped pre-compiled
-
-	# go dependencies for webapp (without my own)
-	#go get google.golang.org/grpc
-	#go get -u github.com/improbable-eng/grpc-web/go/grpcweb
-	#go get -u github.com/gorilla/websocket
-
-# This target probably needs to be run at least once to get the dependencies on
-# the go path. But after that, you probably actually want to run:
-# $ cd build_support && ./build.sh && cd ..
-# instead, to build with the right GOOS and GOARCH settings.
-compile:
-	go get github.com/mame82/P4wnP1_aloa/... # partially downloads again, but we need the library packages in go path to build
-	# <--- second compilation, maybe -d flag on go get above is better
-	env GOBIN=$(CURDIR)/build go install ./cmd/... # compile all main packages to the build folder
-
-	# compile the web app
-	# ToDo: (check if dependencies have been fetched by 'go get', even with the build js tags)
-	$(HOME)/go/bin/gopherjs get github.com/mame82/P4wnP1_aloa/web_client/...
-	$(HOME)/go/bin/gopherjs build -m -o build/webapp.js web_client/*.go
-
-installkali:
-	#apt-get -y install git screen hostapd autossh bluez bluez-tools bridge-utils policykit-1 genisoimage iodine haveged
-	#apt-get -y install tcpdump
-	#apt-get -y install python-pip python-dev
-
-	# before installing dnsmasq, the nameserver from /etc/resolv.conf should be saved
-	# to restore after install (gets overwritten by dnsmasq package)
-	#cp /etc/resolv.conf /tmp/backup_resolv.conf
-	#apt-get -y install dnsmasq
-	#/bin/bash -c 'cat /tmp/backup_resolv.conf > /etc/resolv.conf'
-
-	# python dependencies for HIDbackdoor
-	sudo pip install pydispatcher
-
-	cp build/P4wnP1_service /usr/local/bin/
-	cp build/P4wnP1_cli /usr/local/bin/
-	cp dist/P4wnP1.service /etc/systemd/system/P4wnP1.service
-	# copy over keymaps, scripts and www data
-	mkdir -p /usr/local/P4wnP1
-	cp -R dist/keymaps /usr/local/P4wnP1/
-	cp -R dist/scripts /usr/local/P4wnP1/
-	cp -R dist/HIDScripts /usr/local/P4wnP1/
-	cp -R dist/www /usr/local/P4wnP1/
-	cp -R dist/db /usr/local/P4wnP1/
-	cp -R dist/helper /usr/local/P4wnP1/
-	cp -R dist/ums /usr/local/P4wnP1/
-	cp -R dist/legacy /usr/local/P4wnP1/
-	cp build/webapp.js /usr/local/P4wnP1/www
-	cp build/webapp.js.map /usr/local/P4wnP1/www
-
-	# careful testing
-	#sudo update-rc.d dhcpcd disable
-	#sudo update-rc.d dnsmasq disable
-	systemctl disable networking.service # disable network service, relevant parts are wrapped by P4wnP1 (boottime below 20 seconds)
-
-	# enable service
-	systemctl enable haveged
-	systemctl enable avahi-daemon
-	systemctl enable P4wnP1.service
+more: 
+	sudo apt-get -y install ettercap-text-only hostapd-mana hcxtools bully pixiewps asleap hashcat tshark mdk4 hcxdumptool socat 
 
 install:
-	cp build/P4wnP1_service /usr/local/bin/
-	cp build/P4wnP1_cli /usr/local/bin/
-	cp dist/P4wnP1.service /etc/systemd/system/P4wnP1.service
-	# copy over keymaps, scripts and www data
-	mkdir -p /usr/local/P4wnP1
-	cp -R dist/keymaps /usr/local/P4wnP1/
-	cp -R dist/scripts /usr/local/P4wnP1/
-	cp -R dist/HIDScripts /usr/local/P4wnP1/
-	cp -R dist/www /usr/local/P4wnP1/
-	cp -R dist/db /usr/local/P4wnP1/
-	cp dist/bin/* /usr/local/bin/
-	cp build/webapp.js /usr/local/P4wnP1/www
-	cp build/webapp.js.map /usr/local/P4wnP1/www
-
+	cp /boot/armbianEnv.txt /root
+	cp -r usr/local/P4wnP1 /usr/local/
+	cp usr/lib/systemd/system/gpsd.socket /usr/lib/systemd/system/gpsd.socket
+	#cp etc/cloud/templates/hosts.debian.tmpl /etc/cloud/templates/hosts.debian.tmpl
+	cp etc/systemd/system/* /etc/systemd/system/
+	cp .tmux.conf /root/
+	mkdir -p /usr/share/S.o.D/kismet
+	mkdir -p /usr/share/S.o.D/airgeddon
+	cp usr/share/airgeddon/.* /usr/share/airgeddon/
+	cp etc/kismet/* /etc/kismet
+	cp usr/local/bin/* /usr/local/bin/
+	cp etc/default/gpsd /etc/default/gpsd
 	# careful testing
 	#sudo update-rc.d dhcpcd disable
 	#sudo update-rc.d dnsmasq disable
 	# systemctl disable networking.service # disable network service, relevant parts are wrapped by P4wnP1 (boottime below 20 seconds)
 
 	# reinit service daemon
-	# systemctl daemon-reload
-	# enable service
-	# systemctl enable haveged
-	# systemctl enable P4wnP1.service
-	# start service
-	# service P4wnP1 start
-
-remove:
-	# stop service
-	service P4wnP1 stop
-	# disable service
-	systemctl disable P4wnP1.service
-	rm -f /usr/local/bin/P4wnP1_service
-	rm -f /usr/local/bin/P4wnP1_cli
-	rm -f /etc/systemd/system/P4wnP1.service
-	rm -R /usr/local/P4wnP1/    # this folder should be kept, if only an update should be applied
-	# reinit service daemon
 	systemctl daemon-reload
+	# enable services
+	systemctl enable haveged
+	systemctl enable avahi-daemon
+	systemctl enable P4wnP1.service
+	systemctl enable P4wnP12026.service
+	# start services
+	service P4wnP1 start
+	service P4wnP12026 start
 
-	#sudo update-rc.d dhcpcd enable
+full_install:
+	sudo apt update
+	sudo apt-get -y install git screen hostapd-wpe autossh bluez iodine haveged
+	sudo apt-get -y install tcpdump socat
+	sudo apt-get -y install python3-pip python3-dev
+	sudo apt-get -y install hostapd haveged avahi-daemon
+        #All airgeddon tools
+        #sudo apt-get -y install ettercap hostapd-mana hcxtools bully pixiewps asleap hashcat wireshark-cli mdk4 hcxdumptool 
+        # before installing dnsmasq, the nameserver from /etc/resolv.conf should be saved
+        # to restore after install (gets overwritten by dnsmasq package)
+	cp /etc/resolv.conf /tmp/backup_resolv.conf
+	sudo apt-get -y install dnsmasq
+	sudo /bin/bash -c 'cat /tmp/backup_resolv.conf > /etc/resolv.conf'
+
+        # python dependencies for HIDbackdoor
+	sudo pip install pycryptodome --break-system-packages # already present on stretch
+
+        # dependencies for kismet gpsd and airgeddon
+	sudo apt-get -y install kismet gpsd gpsd-clients airgeddon
+	sudo apt-get -y install bettercap-ui isc-dhcp-server-ldap php-cgi lighttpd-mod-webdav
+	sudo apt-get -y install resolvconf ffmpeg php-fpm lighttpd-modules-dbi mmdb-bin libsox-fmt-alsa
+	sudo apt-get -y install spawn-fcgi lighttpd-modules-lua gpsd-clients 
+	sudo apt-get -y install libsox-fmt-oss lighttpd-doc xfonts-cyrillic tmux
+	cp /boot/armbianEnv.txt /root/
+	cp -r usr/local/P4wnP1 /usr/local/
+	cp usr/lib/systemd/system/gpsd.socket /usr/lib/systemd/system/gpsd.socket
+	#cp etc/cloud/templates/hosts.debian.tmpl /etc/cloud/templates/hosts.debian.tmpl
+	cp etc/systemd/system/* /etc/systemd/system/
+	cp .tmux.conf /root/
+	mkdir -p /usr/share/S.o.D/kismet
+	mkdir -p /usr/share/S.o.D/airgeddon
+	cp usr/share/airgeddon/.* /usr/share/airgeddon/
+	cp etc/kismet/* /etc/kismet
+	cp usr/local/bin/* /usr/local/bin/
+	cp etc/default/gpsd /etc/default/gpsd
+
+        # reinit service daemon
+	systemctl daemon-reload
+        # enable services
+	systemctl enable haveged
+	systemctl enable avahi-daemon
+	systemctl enable P4wnP1.service
+	systemctl enable P4wnP12026.service
+        # start services
+	service P4wnP1 start
+	service P4wnP12026 start
 

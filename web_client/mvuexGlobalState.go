@@ -198,7 +198,7 @@ type GlobalState struct {
 
 func createGlobalStateStruct() GlobalState {
 	state := GlobalState{Object: O()}
-	state.Title = "P4wnP1 by MaMe82"
+	state.Title = "R4d-P4wn"
 	state.CurrentHIDScriptSource = initHIDScript
 	state.CurrentGadgetSettings = NewUSBGadgetSettings()
 	state.CurrentlyDeployingGadgetSettings = false
@@ -653,6 +653,9 @@ func actionStartEventListen(store *mvuex.Store, context *mvuex.ActionContext, st
 			println("Starting store event listener")
 
 			evStream, cancel, err := RpcClient.StartEventListening(time.Second * 2)
+			if globalState.IsConnected {
+				store.Dispatch(VUEX_ACTION_UPDATE_ALL_STATES)
+			}
 			if err != nil {
 				println("Couldn't start event listener or connect to server ...")
 				//return
@@ -1743,7 +1746,7 @@ func initMVuex() *mvuex.Store {
 			return filtered
 		}),
 		mvuex.Getter("isConnected", func(state *GlobalState) interface{} {
-			return state.EventListenerRunning
+			return state.IsConnected || state.EventListenerRunning
 		}),
 
 		mvuex.Getter("hidjobsFailed", func(state *GlobalState) interface{} {

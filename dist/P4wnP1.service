@@ -1,20 +1,16 @@
 [Unit]
-Description=P4wnP1 Startup Service
-#After=systemd-modules-load.service
-After=local-fs.target
-DefaultDependencies=no
-Before=sysinit.target
+Description=P4wnP1 A.L.O.A.
+After=local-fs.target systemd-modules-load.service systemd-udevd.service network-pre.target
+Wants=network-pre.target
+DefaultDependencies=yes
 
 [Service]
 Type=simple
-#Type=forking
-#RemainAfterExit=yes
 ExecStart=/usr/local/bin/P4wnP1_service
-#StandardOutput=journal+console
-#StandardError=journal+console
+Restart=on-failure
+RestartSec=3
 StandardOutput=journal
 StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
-#WantedBy=sysinit.target

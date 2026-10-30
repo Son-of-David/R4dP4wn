@@ -423,7 +423,7 @@ const templateBluetoothController = `
 			</q-item-side>
 			<q-item-main>
 				<q-item-tile label>Discoverable</q-item-tile>
-				<q-item-tile sublabel>P4wnP1 could be discovered by other devices if enabled (only if Connectable)</q-item-tile>
+				<q-item-tile sublabel>R4d-P4wn could be discovered by other devices if enabled (only if Connectable)</q-item-tile>
 			</q-item-main>
 		</q-item>
 
@@ -433,7 +433,7 @@ const templateBluetoothController = `
 			</q-item-side>
 			<q-item-main>
 				<q-item-tile label>Bondable</q-item-tile>
-				<q-item-tile sublabel>Other devices could pair with P4wnP1</q-item-tile>
+				<q-item-tile sublabel>Other devices could pair with R4d-P4wn</q-item-tile>
 			</q-item-main>
 		</q-item>
 

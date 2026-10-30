@@ -136,6 +136,13 @@ func InitComponentsWiFi() {
 			}),
 		hvue.Method("deploy",
 			func(vm *hvue.VM, wifiSettings *jsWiFiSettings) {
+				if f := js.Global.Get("r4dDeployWifi"); f != nil && f != js.Undefined {
+					f.Invoke(wifiSettings, js.MakeFunc(func(this *js.Object, args []*js.Object) interface{} {
+						vm.Get("$store").Call("dispatch", VUEX_ACTION_DEPLOY_WIFI_SETTINGS, wifiSettings)
+						return nil
+					}))
+					return
+				}
 				vm.Get("$store").Call("dispatch", VUEX_ACTION_DEPLOY_WIFI_SETTINGS, wifiSettings)
 			}),
 		hvue.Method("updateStoredSettingsList",
@@ -281,7 +288,7 @@ const templateWiFi = `
 	</q-card>
 	</div>
 
-	<div class="col-12 col-lg" v-if="settings.mode == mode_sta || settings.mode == mode_failover">
+	<div class="col-12 col-lg">
 	<q-card class="full-height">
 		<q-card-title>
 			WiFi client settings
@@ -289,6 +296,18 @@ const templateWiFi = `
 
 		<q-list link>
 				<q-item-separator />
+				<q-item>
+					<q-item-main>
+						<q-item-tile label>Client adapter</q-item-tile>
+						<q-item-tile sublabel>On this AP use wlan1 so the page stays up. Use wlan0 only from USB ethernet (stops the AP).</q-item-tile>
+						<q-item-tile>
+							<select id="r4d-wifi-iface" style="width:100%;padding:8px;background:#eee;border:0">
+								<option value="wlan0">wlan0 (onboard)</option>
+								<option value="wlan1" selected>wlan1 (USB WiFi)</option>
+							</select>
+						</q-item-tile>
+					</q-item-main>
+				</q-item>
 				<q-item tag="label">
 					<q-item-main>
 						<q-item-tile label>SSID</q-item-tile>
@@ -307,12 +326,18 @@ const templateWiFi = `
 						</q-item-tile>
 					</q-item-main>
 				</q-item>
+				<q-item>
+					<q-item-main>
+						<button type="button" id="r4d-wifi-connect" onclick="window.r4dConnectClient && window.r4dConnectClient()" style="width:100%;padding:10px;background:#027be3;color:#fff;border:0;cursor:pointer">Connect as client</button>
+						<div id="r4d-wifi-sta-status" style="margin-top:8px;font-size:12px"></div>
+					</q-item-main>
+				</q-item>
 
 			<template v-if="settings.mode == mode_failover">
 				<q-item>
 					<q-item-main>
-	  				<q-alert type="warning">
-						If the SSID provided for client mode couldn't be connected, an attempt is started to fail over to Access Point mode with the respective settings.
+	  				<q-alert type="info">
+						Client with Failover to AP uses <b>wlan0</b>: it tries to join the client SSID first. If that fails, it starts the onboard AP. When the AP is up, a USB adapter (wlan1) can still join the same SSID so Share/VPN keep an uplink. Store this in the startup Master Template for boot.
 					</q-alert>
 					</q-item-main>
 				</q-item>

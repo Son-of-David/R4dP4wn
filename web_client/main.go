@@ -1,3 +1,7 @@
+// Modified 2026 by Son-of-David as part of R4d-P4wn.
+// This is a modified version of P4wnP1 A.L.O.A. (Copyright (C) 2018 Marcus Mengs).
+// SPDX-License-Identifier: GPL-3.0-or-later  See LICENSE, NOTICE, MODIFICATIONS.md.
+
 // +build js
 
 package main
@@ -59,8 +63,13 @@ func main() {
 		VueRouterRoute("/hid","", "<hid-script></hid-script>"),
 		VueRouterRoute("/hidjobs","", "<hid-job-event-overview></hid-job-event-overview>"),
 		VueRouterRoute("/logger","", "<logger :max-entries='7'></logger>"),
+		VueRouterRoute("/terminal","", "<shell-page></shell-page>"),
 		VueRouterRoute("/network","", "<network></network>"),
 		VueRouterRoute("/wifi","", "<wifi></wifi>"),
+		VueRouterRoute("/kismet","", "<kismet-page></kismet-page>"),
+		VueRouterRoute("/airgeddon","", "<airgeddon-page></airgeddon-page>"),
+		VueRouterRoute("/share","", "<share-page></share-page>"),
+		VueRouterRoute("/capture","", "<capture-page></capture-page>"),
 		VueRouterRoute("/triggeractions","", "<triggeraction-manager></triggeraction-manager>"),
 		VueRouterRoute("/bluetooth","", "<bluetooth></bluetooth>"),
 		VueRouterRoute("/generic","", "<generic></generic>"),
@@ -105,20 +114,26 @@ const templateMainApp = `
         <q-layout-header :reveal="!$q.platform.is.desktop">
             <q-toolbar>
                 <q-toolbar-title>
-                    P4wnP1 A.L.O.A.
-					<span slot="subtitle" class="mobile-only">` + common_web.VERSION + ` by MaMe82</span>
+                    R4d-P4wn
+					<span slot="subtitle" class="mobile-only">` + common_web.VERSION_CREDIT + `</span>
                 </q-toolbar-title>
             </q-toolbar>
             <q-tabs>
                 <q-route-tab default slot="title" to="usb" name="tab-usb" icon="usb" label="USB Settings"></q-route-tab>
                 <q-route-tab slot="title" to="wifi" name="tab-wifi" icon="wifi" label="WiFi settings"></q-route-tab>
+                <q-route-tab slot="title" to="kismet" name="tab-kismet" icon="track_changes" label="Kismet"></q-route-tab>
+                <q-route-tab slot="title" to="airgeddon" name="tab-airgeddon" icon="wifi_tethering" label="Airgeddon"></q-route-tab>
+                <q-route-tab slot="title" to="share" name="tab-share" icon="vpn_lock" label="Share / VPN"></q-route-tab>
+                <q-route-tab slot="title" to="capture" name="tab-capture" icon="search" label="Capture"></q-route-tab>
                 <q-route-tab slot="title" to="bluetooth" name="tab-bluetooth" icon="bluetooth" label="Bluetooth"></q-route-tab>
                 <q-route-tab slot="title" to="network" name="tab-network" icon="settings_ethernet" label="Network settings"></q-route-tab>
                 <q-route-tab slot="title" to="triggeractions" name="tab-triggeraction" icon="whatshot" label="Trigger Actions"></q-route-tab>
                 <q-route-tab slot="title" to="hid" name="tab-hid-script" icon="keyboard" label="HIDScript"></q-route-tab>
  <!--               <q-route-tab slot="title" to="hidjobs" name="tab-hid-jobs" icon="schedule" label="HID Events"></q-route-tab> -->
                 <q-route-tab slot="title" to="logger" name="tab-logger" icon="message" label="Event Log"></q-route-tab>
+                <q-route-tab slot="title" to="terminal" name="tab-terminal" icon="code" label="Terminal"></q-route-tab>
                 <q-route-tab slot="title" to="generic" name="tab-generic" icon="settings" label="Generic settings"></q-route-tab>
+                <q-route-tab slot="title" to="license" name="tab-license" icon="gavel" label="License"></q-route-tab>
             </q-tabs>
         </q-layout-header>
 
@@ -126,7 +141,7 @@ const templateMainApp = `
         <q-layout-footer class="desktop-only">
             <q-toolbar>
                 <q-toolbar-title>
-                    <div slot="subtitle">` + common_web.VERSION + ` by MaMe82</div>
+                    <div slot="subtitle">` + common_web.VERSION_CREDIT + `</div>
                 </q-toolbar-title>
             </q-toolbar>
         </q-layout-footer>

@@ -129,8 +129,35 @@ func (nim *NetworkInterfaceManager) ReDeploy() (err error) {
 	return nim.DeploySettings(nim.state.CurrentSettings)
 }
 
+func normalizeUSBEthernetDHCP(settings *pb.EthernetInterfaceSettings) {
+	if settings == nil || settings.Name != USB_ETHERNET_BRIDGE_NAME {
+		return
+	}
+	if settings.DhcpServerSettings == nil {
+		return
+	}
+	if settings.DhcpServerSettings.Options == nil {
+		settings.DhcpServerSettings.Options = map[uint32]string{}
+	}
+	gw := settings.IpAddress4
+	if gw == "" {
+		gw = "172.16.0.1"
+	}
+	if settings.DhcpServerSettings.Options[3] == "" {
+		settings.DhcpServerSettings.Options[3] = gw
+		log.Printf("usbeth DHCP option 3 (router) was empty; set to %s for Windows", gw)
+	}
+	if settings.DhcpServerSettings.Options[6] == "" || settings.DhcpServerSettings.Options[6] == gw {
+		settings.DhcpServerSettings.Options[6] = "8.8.8.8,1.1.1.1"
+		log.Printf("usbeth DHCP option 6 (DNS) set to 8.8.8.8,1.1.1.1")
+	}
+}
+
 func (nim *NetworkInterfaceManager) DeploySettings(settings *pb.EthernetInterfaceSettings) (err error) {
-	//Get Interface
+	if settings == nil {
+		return errors.New("ethernet interface settings are nil")
+	}
+	normalizeUSBEthernetDHCP(settings)
 	iface, err := net.InterfaceByName(settings.Name)
 	if err != nil {
 		nim.state.InterfacePresent = false

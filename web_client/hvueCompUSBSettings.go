@@ -324,7 +324,7 @@ const (
 					<q-item tag="label" indent>
 						<q-item-main>
 							<q-item-tile label>Device Address</q-item-tile>
-							<q-item-tile sublabel>MAC address on P4wnP1's end (format: AA:BB:CC:DD:EE:FF)</q-item-tile>
+							<q-item-tile sublabel>MAC address on R4d-P4wn's end (format: AA:BB:CC:DD:EE:FF)</q-item-tile>
 							<q-item-tile>
 								<q-input v-model="currentGadgetSettings.CdcEcmSettings.DevAddr" inverted></q-input>
 							</q-item-tile>
@@ -355,7 +355,7 @@ const (
 					<q-item tag="label" ident>
 						<q-item-main>
 							<q-item-tile label>Device Address</q-item-tile>
-							<q-item-tile sublabel>MAC address on P4wnP1's end (format: AA:BB:CC:DD:EE:FF)</q-item-tile>
+							<q-item-tile sublabel>MAC address on R4d-P4wn's end (format: AA:BB:CC:DD:EE:FF)</q-item-tile>
 							<q-item-tile>
 								<q-input v-model="currentGadgetSettings.RndisSettings.DevAddr" inverted></q-input>
 							</q-item-tile>

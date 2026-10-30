@@ -3,12 +3,18 @@
 # has to be run from 'build_support' subfolder
 cd ..
 echo "compiling P4wnP1_cli and P4wnP1_service ..."
-env GOOS=linux GOARCH=arm GOARM=6 go build -o build/P4wnP1_service cmd/P4wnP1_service/P4wnP1_service.go
-env GOOS=linux GOARCH=arm GOARM=6 go build -o build/P4wnP1_cli cmd/P4wnP1_cli/P4wnP1_cli.go
+ARCH="${P4WNP1_GOARCH:-arm64}"
+env GOOS=linux GOARCH="$ARCH" go build -o build/P4wnP1_service ./cmd/P4wnP1_service
+env GOOS=linux GOARCH="$ARCH" go build -o build/P4wnP1_cli ./cmd/P4wnP1_cli
 
 echo "compiling web client to JavaScript ..."
 cd web_client
 gopherjs build -o ../build/webapp.js
+python3 ../build_support/preserve_native_map.py ../build/webapp.js
+cp ../build/webapp.js.map ../build/webmap.js
+cp ../build/webapp.js ../dist/www/webapp.js
+cp ../build/webapp.js.map ../dist/www/webapp.js.map
+cp ../build/webmap.js ../dist/www/webmap.js
 
 echo "...Results stored in ./build directory"
 echo

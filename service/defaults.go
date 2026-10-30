@@ -85,13 +85,13 @@ func GetDefaultDHCPConfigUSB() (settings *pb.DHCPServerSettings) {
 		ListenPort:         0,     //No DNS, DHCP only
 		NotAuthoritative:   false, //be authoritative
 		Ranges: []*pb.DHCPServerRange{
-			&pb.DHCPServerRange{RangeLower: "172.16.0.2", RangeUpper: "172.16.0.2", LeaseTime: "5m"},
+			&pb.DHCPServerRange{RangeLower: "172.16.0.2", RangeUpper: "172.16.0.2", LeaseTime: "24h"},
 			//&pb.DHCPServerRange{RangeLower: "172.16.0.5", RangeUpper: "172.16.0.6", LeaseTime: "2m"},
 		},
 		Options: map[uint32]string{
-			//Note: Options 1 (Netmask), 12 (Hostname) and 28 (Broadcast Address) are still enabled
-			3:   "", //Disable option: Router
-			6:   "", //Disable option: DNS
+			// Windows often stays on "Identifying..." with an empty router option.
+			3:   "172.16.0.1",
+			6:   "8.8.8.8,1.1.1.1",
 			//252: "http://172.16.0.1/wpad.dat",
 		},
 	}
@@ -111,7 +111,7 @@ func GetDefaultDHCPConfigBluetooth() (settings *pb.DHCPServerSettings) {
 		ListenPort:         0,     //No DNS, DHCP only
 		NotAuthoritative:   false, //be authoritative
 		Ranges: []*pb.DHCPServerRange{
-			&pb.DHCPServerRange{RangeLower: "172.26.0.2", RangeUpper: "172.26.0.20", LeaseTime: "5m"},
+			&pb.DHCPServerRange{RangeLower: "172.26.0.2", RangeUpper: "172.26.0.20", LeaseTime: "24h"},
 		},
 		Options: map[uint32]string{
 			3:   "172.26.0.1", //Disable option: Router
@@ -130,11 +130,11 @@ func GetDefaultDHCPConfigWiFi() (settings *pb.DHCPServerSettings) {
 		ListenPort:         0,     //No DNS, DHCP only
 		NotAuthoritative:   false, //be authoritative
 		Ranges: []*pb.DHCPServerRange{
-			&pb.DHCPServerRange{RangeLower: "172.24.0.2", RangeUpper: "172.24.0.20", LeaseTime: "5m"},
+			&pb.DHCPServerRange{RangeLower: "172.24.0.2", RangeUpper: "172.24.0.20", LeaseTime: "24h"},
 		},
 		Options: map[uint32]string{
-			3:   "", //Disable option: Router
-			6:   "", //Disable option: DNS
+			3: "172.24.0.1",
+			6: "8.8.8.8,1.1.1.1",
 		},
 	}
 	return
@@ -149,18 +149,18 @@ func GetDefaultLEDSettings() (res *pb.LEDSettings) {
 // Note: If no single function is enabled, the gadget mustn't be enabled itself in order to be deployable
 func GetDefaultGadgetSettings() (res pb.GadgetSettings) {
 	res = pb.GadgetSettings{
-		Enabled:          false,
+		Enabled:          true,
 		Vid:              "0x1d6b",
-		Pid:              "0x1347",
+		Pid:              "0x134B",
 		Manufacturer:     "MaMe82",
 		Product:          "P4wnP1 by MaMe82",
 		Serial:           "deadbeef1337",
 		Use_CDC_ECM:      false,
-		Use_RNDIS:        false,
-		Use_HID_KEYBOARD: false,
-		Use_HID_MOUSE:    false,
+		Use_RNDIS:        true,
+		Use_HID_KEYBOARD: true,
+		Use_HID_MOUSE:    true,
 		Use_HID_RAW:      false,
-		Use_UMS:          false,
+		Use_UMS:          true,
 		Use_SERIAL:       false,
 		RndisSettings: &pb.GadgetSettingsEthernet{
 			HostAddr: DEFAULT_RNDIS_HOST_ADDR,
@@ -171,30 +171,27 @@ func GetDefaultGadgetSettings() (res pb.GadgetSettings) {
 			DevAddr:  DEFAULT_CDC_ECM_DEV_ADDR,
 		},
 		UmsSettings: &pb.GadgetSettingsUMS{
-			File:"", //we don't supply an image file, which is no problem as it could be applied later on (removable media)
-			Cdrom:false, //By default we don't emulate a CD drive, but a flashdrive
+			File:  "default.bin",
+			Cdrom: false,
 		},
 	}
 
 	return res
 }
 
-/*
-func GetDefaultWiFiSettings() (res *pb.WiFiSettings) {
-	res = &pb.WiFiSettings{
-		Mode: pb.WiFiSettings_AP,
-		AuthMode: pb.WiFiSettings_WPA2_PSK,
-		Disabled: false,
-		Reg: "US",
-		ApChannel: 6,
-		ApHideSsid: false,
-		BssCfgAP: &pb.BSSCfg{
+func GetDefaultWiFiSettings() *pb.WiFiSettings {
+	return &pb.WiFiSettings{
+		Name:        "default",
+		Disabled:    false,
+		Regulatory:  "US",
+		WorkingMode: pb.WiFiWorkingMode_AP,
+		AuthMode:    pb.WiFiAuthMode_WPA2_PSK,
+		Channel:     6,
+		Ap_BSS: &pb.WiFiBSSCfg{
 			SSID: "P4wnP1",
-			PSK: "MaMe82-P4wnP1",
+			PSK:  "MaMe82-P4wnP1",
 		},
-		DisableNexmon: true,
-		BssCfgClient: nil, //not needed
+		HideSsid: false,
+		Nexmon:   false,
 	}
-	return
 }
-*/
